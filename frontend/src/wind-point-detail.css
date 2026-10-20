@@ -1,0 +1,251 @@
+.wind-point-photo-card {
+  margin-bottom: 22px;
+  padding: 20px;
+  border: 1px solid #b8ddf7;
+  border-radius: 10px;
+  background: #f7fcffcc;
+  color: #0b376c;
+  box-shadow: 0 8px 20px #22629f12;
+}
+
+.wind-point-photo-heading {
+  align-items: center;
+}
+
+.wind-point-viewer {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 440px;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  background-color: #092e51;
+  background-position: center;
+  background-size: cover;
+  cursor: url('/white-hand-cursor.svg') 7 5, grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.wind-point-viewer.is-zoomed { cursor: url('/white-hand-cursor.svg') 7 5, grab; }
+.wind-point-viewer.is-dragging { cursor: grabbing; }
+
+.wind-point-viewer::before {
+  content: '';
+  position: absolute;
+  inset: -24px;
+  background: inherit;
+  filter: blur(18px) brightness(.52) saturate(.82);
+  transform: scale(1.08);
+}
+
+.wind-point-viewer > img {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: contrast(1.035) saturate(1.04) brightness(1.025);
+  transform-origin: center;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.wind-point-viewer-shade {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  background: linear-gradient(180deg, #001b3508 48%, #00162d99 100%);
+  pointer-events: none;
+}
+
+.viewer-source {
+  position: absolute;
+  z-index: 3;
+}
+
+.site-image-controls,
+.site-image-hint {
+  position: absolute;
+  z-index: 3;
+}
+
+.viewer-source {
+  top: 16px;
+  left: 16px;
+  padding: 7px 10px;
+  border: 1px solid #ffffff42;
+  border-radius: 999px;
+  background: #032950c7;
+  color: #eaf7ff;
+  font: 600 9px/1 'DM Mono', monospace;
+  letter-spacing: .55px;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+}
+
+.site-image-controls {
+  left: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid #ffffff4d;
+  border-radius: 8px;
+  background: #032950dc;
+  box-shadow: 0 6px 18px #00172e66;
+  color: #fff;
+  backdrop-filter: blur(8px);
+}
+
+.site-image-controls button {
+  display: grid;
+  place-items: center;
+  min-width: 38px;
+  height: 36px;
+  padding: 0 11px;
+  border: 0;
+  border-right: 1px solid #ffffff2b;
+  background: transparent;
+  color: #fff;
+  font-size: 19px;
+}
+
+.site-image-controls button:hover:not(:disabled),
+.site-image-controls button:focus-visible {
+  background: #087fc3;
+  outline: 0;
+}
+
+.site-image-controls button:disabled {
+  color: #86a4bb;
+  cursor: not-allowed;
+}
+
+.site-image-controls > span {
+  min-width: 54px;
+  text-align: center;
+  font: 500 9px/1 'DM Mono', monospace;
+}
+
+.site-image-controls .site-image-reset {
+  border-right: 0;
+  border-left: 1px solid #ffffff2b;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.site-image-hint {
+  right: 16px;
+  bottom: 18px;
+  padding: 7px 10px;
+  border: 1px solid #ffffff35;
+  border-radius: 999px;
+  background: #032950bd;
+  color: #d9efff;
+  font: 500 9px/1 'DM Mono', monospace;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.wind-point-photo-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding-top: 10px;
+  color: #557d9f;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.wind-point-photo-caption span:last-child {
+  text-align: right;
+}
+
+.wind-point-photo-empty {
+  min-height: 300px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  padding: 40px;
+  border: 1px dashed #8fc5e7;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #e9f7ff, #f8fcff);
+  color: #4f7899;
+  text-align: center;
+}
+
+.wind-point-photo-empty > span {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 14px;
+  border: 1px solid #9ed0ed;
+  border-radius: 50%;
+  background: #fff;
+  color: #087fc3;
+  font-size: 34px;
+}
+
+.wind-point-photo-empty strong {
+  color: #093b70;
+  font-size: 16px;
+}
+
+.wind-point-photo-empty p {
+  max-width: 520px;
+  margin: 7px 0 0;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.weekly-metrics-card {
+  min-height: 390px;
+}
+
+.weekly-metric-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 7px 0 8px;
+}
+
+.weekly-metric-picker button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid #c3dff0;
+  border-radius: 999px;
+  background: #fff;
+  color: #416d91;
+  font-size: 10px;
+}
+
+.weekly-metric-picker button i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.weekly-metric-picker button.active {
+  border-color: #087fc3;
+  background: #e5f5ff;
+  color: #075b9e;
+  box-shadow: inset 0 0 0 1px #087fc3;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .wind-point-photo-card { padding: 14px; }
+  .wind-point-photo-heading,
+  .wind-point-photo-caption { align-items: flex-start; flex-direction: column; }
+  .wind-point-photo-caption span:last-child { text-align: left; }
+  .wind-point-viewer { min-height: 390px; }
+  .site-image-hint { display: none; }
+  .weekly-metrics-card .section-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+}

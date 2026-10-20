@@ -1,0 +1,927 @@
+.bi-export-control {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding-left: 3px;
+  border-left: 1px solid var(--bi-line);
+}
+
+.bi-export-control label {
+  display: grid;
+  gap: 3px;
+  color: var(--bi-muted);
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.bi-export-control select {
+  height: 31px;
+  min-width: 105px;
+  border: 1px solid var(--bi-line);
+  border-radius: 6px;
+  background: #fff;
+  color: #245576;
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.bi-export-control button {
+  border-color: #087fc3 !important;
+  background: #087fc3 !important;
+  color: #fff !important;
+}
+
+.bi-export-control button:disabled {
+  cursor: wait;
+  opacity: .72;
+}
+
+.bi-pdf-page {
+  display: contents;
+}
+
+.bi-export-header {
+  display: none;
+}
+
+/*
+ * The application shell gives every <header> a fixed 82px height. Analytics
+ * contains several nested headers whose copy and controls can wrap, so that
+ * global rule made their content spill over the following chart or map.
+ * Keep the shell-sized top bar, but let report headers size to their content.
+ */
+.analytics-host .bi-topbar {
+  height: auto;
+  min-height: 82px;
+}
+
+.analytics-host .bi-canvas > header,
+.analytics-host .bi-fleet-map-panel > header,
+.analytics-host .bi-table-panel > header {
+  height: auto;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+}
+
+.analytics-host .bi-canvas > header {
+  padding: 0;
+}
+
+.bi-powerbi-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(390px, .85fr);
+  gap: 14px;
+  align-items: stretch;
+  margin-bottom: 14px;
+}
+
+.bi-powerbi-grid .bi-canvas {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
+.bi-powerbi-grid .bi-chart {
+  width: 100%;
+  min-width: 0;
+  height: 315px;
+  max-height: 315px;
+  overflow: hidden;
+  contain: layout paint;
+  container-type: inline-size;
+}
+
+.bi-fleet-map-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--bi-line);
+  border-radius: 8px;
+  background: var(--bi-panel);
+}
+
+.bi-fleet-map-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 10px;
+}
+
+.bi-fleet-map-panel > header > div:first-child {
+  min-width: 0;
+}
+
+.bi-fleet-map-panel h2 {
+  margin: 3px 0 4px;
+  color: var(--bi-ink);
+  font-size: 15px;
+}
+
+.bi-fleet-map-panel header span,
+.bi-fleet-map-panel > footer {
+  color: var(--bi-muted);
+  font-size: 9px;
+}
+
+.bi-map-range {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 3px;
+  max-width: 145px;
+  text-align: right;
+}
+
+.bi-map-range small {
+  color: var(--bi-muted);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.bi-map-range b {
+  color: #0870ae;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.bi-fleet-map {
+  position: relative;
+  min-height: 315px;
+  margin: 0 14px;
+  overflow: hidden;
+  border: 1px solid #c9dfe9;
+  border-radius: 7px;
+  background:
+    radial-gradient(circle at 25% 12%, #fff 0, #fff0 34%),
+    linear-gradient(145deg, #eef8fc, #d9edf6);
+}
+
+.bi-fleet-map svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 315px;
+}
+
+.bi-region-shapes path {
+  fill: #e5f2e6;
+  fill-opacity: .88;
+  stroke: #77a98f;
+  stroke-width: 1.15;
+  vector-effect: non-scaling-stroke;
+}
+
+.bi-region-shapes path:nth-child(even) {
+  fill: #d9ecdd;
+}
+
+.bi-fleet-marker {
+  cursor: pointer;
+  outline: none;
+}
+
+.bi-fleet-marker .marker-bubble {
+  stroke: #fff;
+  stroke-width: 2.2;
+  filter: drop-shadow(0 2px 2px #002f5266);
+  transition: transform .15s;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.bi-fleet-marker:hover .marker-bubble,
+.bi-fleet-marker:focus .marker-bubble {
+  stroke: #f3b634;
+  transform: scale(1.18);
+}
+
+.bi-fleet-marker .marker-core {
+  fill: #fff;
+  pointer-events: none;
+}
+
+.bi-fleet-marker .marker-leader {
+  stroke: #668ca3;
+  stroke-width: .8;
+  stroke-dasharray: 2 2;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.bi-fleet-marker text {
+  paint-order: stroke;
+  stroke: #f8fcff;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  fill: #123d5c;
+  font: 700 8.5px Manrope, Arial, sans-serif;
+  pointer-events: none;
+}
+
+.bi-fleet-marker text.marker-value {
+  fill: #0870ae;
+  font-size: 7.5px;
+}
+
+.bi-map-legend {
+  position: absolute;
+  right: 9px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 7px;
+  border: 1px solid #c8dce8;
+  border-radius: 5px;
+  background: #fffffff0;
+  color: #55748b;
+  font-size: 7px;
+}
+
+.bi-map-legend i {
+  width: 14px;
+  height: 7px;
+}
+
+.bi-fleet-map-panel > footer {
+  padding: 9px 16px 12px;
+  line-height: 1.4;
+}
+
+.bi-fleet-map-panel > footer b {
+  color: #245576;
+}
+
+.bi-bottom-grid {
+  grid-template-columns: minmax(0, 1.7fr) minmax(290px, .7fr);
+}
+
+.bi-table-panel > header > span {
+  color: var(--bi-muted);
+  font-size: 9px;
+}
+
+.bi-insight-panel .bi-panel-body {
+  height: 100%;
+}
+
+.bi-insight-highlight {
+  display: grid;
+  gap: 3px;
+  margin: 13px 0;
+  padding: 12px;
+  border-left: 4px solid #087fc3;
+  border-radius: 6px;
+  background: #eaf6fc;
+}
+
+.bi-insight-highlight small {
+  color: #5f8096;
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.bi-insight-highlight strong {
+  color: #0b4675;
+  font-size: 14px;
+}
+
+.bi-insight-highlight span {
+  color: #087fc3;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.bi-panel-body ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 16px;
+  color: #55748b;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.bi-report-notes {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.bi-report-notes article {
+  padding: 15px 17px;
+  border: 1px solid var(--bi-line);
+  border-radius: 8px;
+  background: var(--bi-panel);
+}
+
+.bi-report-notes h2 {
+  margin: 3px 0 7px;
+  color: var(--bi-ink);
+  font-size: 13px;
+}
+
+.bi-report-notes article > p:last-child {
+  margin: 0;
+  color: var(--bi-muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.bi-report-notes dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  margin: 8px 0 0;
+}
+
+.bi-report-notes dl div {
+  display: grid;
+  gap: 2px;
+}
+
+.bi-report-notes dt {
+  color: var(--bi-muted);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.bi-report-notes dd {
+  margin: 0;
+  color: var(--bi-ink);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.bi-report-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 9px 2px 0;
+  border-top: 1px solid var(--bi-line);
+  color: var(--bi-muted);
+  font-size: 8px;
+}
+
+.bi-dark .bi-export-control select,
+.bi-dark .bi-map-legend {
+  border-color: var(--bi-line);
+  background: var(--bi-panel);
+  color: var(--bi-ink);
+}
+
+.bi-dark .bi-fleet-map {
+  border-color: #345875;
+  background: linear-gradient(145deg, #153b55, #0d2b43);
+}
+
+.bi-dark .bi-region-shapes path {
+  fill: #204c48;
+  stroke: #62a18b;
+}
+
+.bi-dark .bi-region-shapes path:nth-child(even) {
+  fill: #1c433f;
+}
+
+.bi-dark .bi-fleet-marker text {
+  fill: #e7f5fc;
+  stroke: #102e49;
+}
+
+.bi-dark .bi-fleet-marker text.marker-value {
+  fill: #65d2f4;
+}
+
+.bi-dark .bi-insight-highlight {
+  background: #163f5b;
+}
+
+@media (max-width: 1250px) {
+  .bi-powerbi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bi-bottom-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bi-fleet-map {
+    min-height: 390px;
+  }
+
+  .bi-fleet-map svg {
+    min-height: 390px;
+  }
+}
+
+@media (max-width: 800px) {
+  .analytics-host .bi-topbar {
+    min-height: 0;
+  }
+
+  .bi-top-actions,
+  .bi-export-control {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .bi-export-control {
+    padding: 7px 0 0;
+    border-top: 1px solid var(--bi-line);
+    border-left: 0;
+  }
+
+  .bi-export-control label {
+    flex: 1;
+  }
+
+  .bi-export-control select {
+    width: 100%;
+  }
+
+  .bi-fleet-map-panel > header {
+    flex-direction: column;
+  }
+
+  .bi-map-range {
+    max-width: none;
+    text-align: left;
+  }
+
+  .bi-fleet-map {
+    min-height: 300px;
+    margin: 0 8px;
+  }
+
+  .bi-fleet-map svg {
+    min-height: 300px;
+  }
+
+  .bi-report-notes {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Direct PDF download canvas. This class is present only while the two report pages are rendered. */
+body.bi-pdf-capture .bi-workspace {
+  --bi-ink: #153753;
+  --bi-muted: #66819a;
+  --bi-line: #d4e2eb;
+  --bi-panel: #fff;
+  --bi-surface: #eef5f9;
+  --bi-accent: #087fc3;
+}
+
+body.bi-pdf-capture .bi-report-content {
+  width: 1050px !important;
+  max-width: 1050px !important;
+}
+
+body.bi-pdf-capture .bi-pdf-page {
+  display: block;
+  width: 1050px;
+  padding: 16px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #153753;
+}
+
+body.bi-pdf-capture .bi-export-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 22px;
+  margin-bottom: 11px;
+  padding: 0 0 10px;
+  border-bottom: 3px solid #087fc3;
+}
+
+body.bi-pdf-capture .bi-export-header > div {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+body.bi-pdf-capture .bi-export-header img {
+  width: 54px;
+  height: 54px;
+  object-fit: contain;
+}
+
+body.bi-pdf-capture .bi-export-header p,
+body.bi-pdf-capture .bi-export-header h1,
+body.bi-pdf-capture .bi-export-header span {
+  margin: 0;
+}
+
+body.bi-pdf-capture .bi-export-header p {
+  color: #087fc3;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .8px;
+}
+
+body.bi-pdf-capture .bi-export-header h1 {
+  margin: 3px 0;
+  color: #0a3457;
+  font-size: 21px;
+}
+
+body.bi-pdf-capture .bi-export-header span {
+  color: #607d91;
+  font-size: 9px;
+}
+
+body.bi-pdf-capture .bi-export-header dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+  min-width: 360px;
+  margin: 0;
+}
+
+body.bi-pdf-capture .bi-export-header dl div {
+  display: grid;
+  gap: 1px;
+}
+
+body.bi-pdf-capture .bi-export-header dt {
+  color: #6a8294;
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+body.bi-pdf-capture .bi-export-header dd {
+  margin: 0;
+  color: #153753;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+body.bi-pdf-capture .bi-canvas,
+body.bi-pdf-capture .bi-fleet-map-panel,
+body.bi-pdf-capture .bi-table-panel,
+body.bi-pdf-capture .bi-insight-panel,
+body.bi-pdf-capture .bi-report-notes article {
+  border-color: #cddde7 !important;
+  background: #fff !important;
+  color: #153753 !important;
+  box-shadow: none !important;
+}
+
+body.bi-pdf-capture .bi-powerbi-grid {
+  grid-template-columns: 1.08fr .92fr !important;
+  gap: 9px;
+  margin: 0;
+}
+
+body.bi-pdf-capture .bi-powerbi-grid .bi-chart,
+body.bi-pdf-capture .bi-fleet-map,
+body.bi-pdf-capture .bi-fleet-map svg {
+  height: 300px;
+  min-height: 300px;
+}
+
+body.bi-pdf-capture .bi-fleet-map {
+  border-color: #c9dfe9 !important;
+  background: linear-gradient(145deg, #eef8fc, #d9edf6) !important;
+}
+
+body.bi-pdf-capture .bi-region-shapes path {
+  fill: #e5f2e6 !important;
+  stroke: #77a98f !important;
+}
+
+body.bi-pdf-capture .bi-fleet-marker text {
+  fill: #123d5c !important;
+  stroke: #f8fcff !important;
+}
+
+body.bi-pdf-capture .bi-fleet-marker text.marker-value {
+  fill: #0870ae !important;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two .bi-bottom-grid {
+  grid-template-columns: minmax(0, 1fr) 270px !important;
+  gap: 9px;
+  align-items: start;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two .bi-table-panel,
+body.bi-pdf-capture .bi-pdf-page-two .bi-insight-panel {
+  min-width: 0;
+  height: auto;
+  overflow: hidden;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two .bi-insight-panel {
+  width: 270px;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two .bi-panel-body {
+  height: auto;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two th,
+body.bi-pdf-capture .bi-pdf-page-two td {
+  padding: 7px 8px;
+  font-size: 7px;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two .bi-report-notes {
+  grid-template-columns: 1.5fr 1fr !important;
+  gap: 9px;
+  margin-top: 9px;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two .bi-report-notes article {
+  padding: 10px 12px;
+}
+
+body.bi-pdf-capture .bi-pdf-page-two .bi-report-footer {
+  margin-top: 9px;
+}
+
+@page {
+  size: A4 landscape;
+  margin: 9mm;
+}
+
+@media print {
+  html,
+  body {
+    width: auto !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    background: #fff !important;
+  }
+
+  body.bi-print-report,
+  body.bi-print-report * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body.bi-print-report .shell {
+    display: block !important;
+  }
+
+  body.bi-print-report .shell > aside,
+  body.bi-print-report .workspace > header,
+  body.bi-print-report .bi-report-nav,
+  body.bi-print-report .bi-topbar,
+  body.bi-print-report .bi-filter-bar,
+  body.bi-print-report .bi-filter-context {
+    display: none !important;
+  }
+
+  body.bi-print-report .workspace,
+  body.bi-print-report .analytics-host,
+  body.bi-print-report .bi-workspace,
+  body.bi-print-report .bi-main {
+    display: block !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    color: #153753 !important;
+  }
+
+  body.bi-print-report .bi-report-content {
+    width: 1050px !important;
+    max-width: 1050px !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+  }
+
+  body.bi-print-report .bi-export-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 22px;
+    margin-bottom: 10px;
+    padding: 0 0 9px;
+    border-bottom: 3px solid #087fc3;
+  }
+
+  body.bi-print-report .bi-export-header > div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  body.bi-print-report .bi-export-header img {
+    width: 50px;
+    height: 50px;
+    object-fit: contain;
+  }
+
+  body.bi-print-report .bi-export-header p,
+  body.bi-print-report .bi-export-header h1,
+  body.bi-print-report .bi-export-header span {
+    margin: 0;
+  }
+
+  body.bi-print-report .bi-export-header p {
+    color: #087fc3;
+    font-size: 7px;
+    font-weight: 900;
+    letter-spacing: .8px;
+  }
+
+  body.bi-print-report .bi-export-header h1 {
+    margin: 2px 0;
+    color: #0a3457;
+    font-size: 19px;
+  }
+
+  body.bi-print-report .bi-export-header span {
+    color: #607d91;
+    font-size: 8px;
+  }
+
+  body.bi-print-report .bi-export-header dl {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px 14px;
+    min-width: 370px;
+    margin: 0;
+  }
+
+  body.bi-print-report .bi-export-header dl div {
+    display: grid;
+    gap: 1px;
+  }
+
+  body.bi-print-report .bi-export-header dt {
+    color: #6a8294;
+    font-size: 6.5px;
+    text-transform: uppercase;
+  }
+
+  body.bi-print-report .bi-export-header dd {
+    margin: 0;
+    color: #153753;
+    font-size: 7.5px;
+    font-weight: 700;
+  }
+
+  body.bi-print-report .bi-powerbi-grid {
+    grid-template-columns: 1.08fr .92fr !important;
+    gap: 8px;
+    margin: 0;
+    break-inside: avoid;
+  }
+
+  body.bi-print-report .bi-canvas,
+  body.bi-print-report .bi-fleet-map-panel,
+  body.bi-print-report .bi-table-panel,
+  body.bi-print-report .bi-insight-panel,
+  body.bi-print-report .bi-report-notes article {
+    border-color: #cddde7 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+  }
+
+  body.bi-print-report .bi-canvas {
+    padding: 9px;
+  }
+
+  body.bi-print-report .bi-canvas h2,
+  body.bi-print-report .bi-fleet-map-panel h2 {
+    font-size: 10px;
+  }
+
+  body.bi-print-report .bi-canvas header span,
+  body.bi-print-report .bi-fleet-map-panel header span,
+  body.bi-print-report .bi-canvas footer,
+  body.bi-print-report .bi-fleet-map-panel footer {
+    font-size: 6.5px;
+  }
+
+  body.bi-print-report .bi-powerbi-grid .bi-chart {
+    height: 255px;
+    margin: 8px 0 5px;
+  }
+
+  body.bi-print-report .bi-fleet-map-panel > header {
+    padding: 9px 10px 4px;
+  }
+
+  body.bi-print-report .bi-fleet-map {
+    min-height: 255px;
+    margin: 0 7px;
+  }
+
+  body.bi-print-report .bi-fleet-map svg {
+    min-height: 255px;
+  }
+
+  body.bi-print-report .bi-bottom-grid {
+    grid-template-columns: minmax(0, 1fr) 250px !important;
+    gap: 8px;
+    align-items: start;
+    width: 100%;
+    height: auto !important;
+    margin-top: 0;
+    break-before: page;
+    break-inside: avoid;
+  }
+
+  body.bi-print-report .bi-table-panel,
+  body.bi-print-report .bi-insight-panel {
+    min-width: 0 !important;
+    height: auto !important;
+    overflow: hidden !important;
+  }
+
+  body.bi-print-report .bi-insight-panel {
+    width: 250px !important;
+    max-width: 250px !important;
+  }
+
+  body.bi-print-report .bi-insight-panel .bi-panel-body {
+    height: auto !important;
+  }
+
+  body.bi-print-report .bi-table-panel > header,
+  body.bi-print-report .bi-panel-body {
+    padding: 10px;
+  }
+
+  body.bi-print-report .bi-table-panel h2,
+  body.bi-print-report .bi-insight-panel h2 {
+    font-size: 10px;
+  }
+
+  body.bi-print-report .bi-table-panel table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+  }
+
+  body.bi-print-report .bi-table-panel th,
+  body.bi-print-report .bi-table-panel td {
+    padding: 6px 7px;
+    font-size: 6.5px;
+  }
+
+  body.bi-print-report .bi-table-panel td small {
+    font-size: 5.5px;
+  }
+
+  body.bi-print-report .bi-panel-body > p,
+  body.bi-print-report .bi-panel-body ul {
+    font-size: 7px;
+  }
+
+  body.bi-print-report .bi-insight-highlight {
+    margin: 7px 0;
+    padding: 7px;
+  }
+
+  body.bi-print-report .bi-insight-highlight strong {
+    font-size: 10px;
+  }
+
+  body.bi-print-report .bi-report-notes {
+    grid-template-columns: 1.5fr 1fr !important;
+    gap: 8px;
+    margin-top: 8px;
+    break-inside: avoid;
+  }
+
+  body.bi-print-report .bi-report-notes article {
+    padding: 9px 10px;
+  }
+
+  body.bi-print-report .bi-report-notes h2 {
+    font-size: 9px;
+  }
+
+  body.bi-print-report .bi-report-notes article > p:last-child,
+  body.bi-print-report .bi-report-notes dt,
+  body.bi-print-report .bi-report-notes dd {
+    font-size: 6.5px;
+  }
+
+  body.bi-print-report .bi-report-footer {
+    font-size: 6px;
+  }
+}

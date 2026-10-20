@@ -1,0 +1,72 @@
+/* Consistent ZESA identity on the login screen and signed-in workspace. */
+.logo {
+  grid-template-columns: 44px minmax(0, 1fr);
+  column-gap: 8px;
+  row-gap: 1px;
+  align-items: center;
+  padding: 0 12px 35px;
+}
+
+.logo span {
+  width: 42px;
+  height: 42px;
+  grid-row: 1 / span 2;
+  align-self: start;
+  background-color: transparent;
+  background-image: url('/zesa-logo.png');
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  box-shadow: none;
+}
+
+.logo span svg {
+  display: none;
+}
+
+.logo b {
+  font-size: 0;
+  letter-spacing: 0;
+  align-self: start;
+  padding-top: 2px;
+}
+
+.logo b::after {
+  content: 'ZESA';
+  color: #fff;
+  font-size: 16px;
+  letter-spacing: .8px;
+}
+
+.logo small {
+  display: block;
+  font-size: 0;
+  line-height: 1.35;
+  align-self: start;
+  margin-top: -3px;
+}
+
+.logo small::after {
+  content: 'WIND ASSESSMENT SYSTEM';
+  display: block;
+  color: #b8c8c1;
+  font-size: 7px;
+  letter-spacing: .75px;
+}
+
+.login-topline > span {
+  font-size: 0;
+}
+
+.login-topline > span::after {
+  content: 'ZESA WIND ASSESSMENT SYSTEM';
+  font-size: 9px;
+  letter-spacing: 1.2px;
+}
+
+@media (max-width: 850px) {
+  .logo b,
+  .logo small {
+    display: none;
+  }
+}

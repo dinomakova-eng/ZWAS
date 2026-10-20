@@ -1,0 +1,26 @@
+.zimbabwe-outline-image {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+  filter: invert(82%) sepia(69%) saturate(852%) hue-rotate(158deg) brightness(98%) contrast(102%) drop-shadow(0 0 7px #4bbdff);
+  opacity: .9;
+}
+
+.zim-outline > span { z-index: 3; }
+
+.login-copy {
+  transform: translateY(34px);
+}
+
+.login-copy h1 {
+  color: #000;
+  text-shadow: 2px 3px 0 #72cfff, 0 0 18px #a8e5ff99;
+}
+
+@media (max-width: 850px) {
+  .login-copy { transform: translateY(12px); }
+}

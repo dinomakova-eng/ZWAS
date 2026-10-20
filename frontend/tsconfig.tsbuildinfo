@@ -1,0 +1,1 @@
+{"root":["./src/admin-console.ts","./src/business-intelligence.ts","./src/comparison-workspace.ts","./src/data-client.ts","./src/environment-module.tsx","./src/main.tsx","./src/navigation.ts","./src/prediction-ai-summary.ts","./src/prediction-filter-sync.ts","./src/prediction-workspace.ts","./src/report-ai-analysis.ts","./src/reports-workspace.ts"],"version":"5.9.3"}

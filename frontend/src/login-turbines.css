@@ -1,0 +1,36 @@
+/* Self-contained, three-blade turbine motion for the Zimbabwe login map. */
+.login-turbine span {
+  animation: turbine-blade-one 2.6s linear infinite;
+}
+
+.login-turbine i {
+  animation: turbine-blade-two 2.6s linear infinite;
+}
+
+.login-turbine b {
+  animation: turbine-blade-three 2.6s linear infinite;
+}
+
+@keyframes turbine-blade-one {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes turbine-blade-two {
+  from { transform: rotate(120deg); }
+  to { transform: rotate(480deg); }
+}
+
+@keyframes turbine-blade-three {
+  from { transform: rotate(240deg); }
+  to { transform: rotate(600deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-turbine span,
+  .login-turbine i,
+  .login-turbine b,
+  .signal {
+    animation: none;
+  }
+}

@@ -1,0 +1,13 @@
+.grid-key .overhead-11,
+.environment-symbols .overhead-11 { background: #e6a700; }
+
+.grid-key .overhead-33,
+.environment-symbols .overhead-33 { background: #e85d27; }
+
+.grid-key .overhead-high,
+.environment-symbols .overhead-high { background: #1f7a4d; }
+
+.environment-layer-list .voltage-lines {
+  height: 8px;
+  background: linear-gradient(to bottom, #e6a700 0 25%, transparent 25% 37%, #e85d27 37% 62%, transparent 62% 75%, #1f7a4d 75% 100%);
+}

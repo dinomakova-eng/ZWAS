@@ -1,0 +1,8 @@
+/* The Overview header uses the page title only. */
+.workspace:has(.stats) > header .eyebrow {
+  display: none;
+}
+
+.workspace:has(.stats) > header h2 {
+  margin-top: 0;
+}

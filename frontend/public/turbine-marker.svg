@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 120" role="img" aria-label="Wind turbine">
+  <defs><filter id="g"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+  <g fill="none" stroke="#d9f7ff" stroke-linecap="round" filter="url(#g)">
+    <path d="M40 43v66M32 111h16" stroke-width="5"/>
+    <circle cx="40" cy="38" r="6" fill="#d9f7ff" stroke="#59c8ff" stroke-width="2"/>
+    <path d="M40 37 13 22M40 37 61 13M40 37 66 54" stroke-width="5"/>
+  </g>
+</svg>

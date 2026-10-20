@@ -1,0 +1,22 @@
+services:
+  database:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: zetdc_wind
+      POSTGRES_USER: zetdc
+      POSTGRES_PASSWORD: zetdc_dev
+    ports: ["5432:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://zetdc:zetdc_dev@database:5432/zetdc_wind
+      JWT_SECRET: change-this-before-production
+    ports: ["8000:8000"]
+    depends_on: [database]
+  frontend:
+    build: ./frontend
+    ports: ["5173:5173"]
+    depends_on: [backend]
+volumes:
+  postgres_data:
