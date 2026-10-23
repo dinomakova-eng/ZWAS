@@ -1,1 +1,1 @@
-.summary-row{cursor:pointer}.summary-row:hover td{background:#dff2ff;color:#064f8d}
+.summary-row{cursor:pointer}.summary-row:hover td{background:#dff2ff;color:#064f8d}.summary-status{display:inline-block;padding:3px 7px;border-radius:99px;font-size:9px;text-transform:capitalize}.summary-status.reporting{background:#dff5ea;color:#177552}.summary-status.unavailable{background:#ffebe8;color:#a74339}.summary-source-note{margin:14px 10px 0;color:#5a83a9;font-size:10px;line-height:1.5}

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Normalize the eight supplied wind-data folders for the WTMS API.
 
-The source CSVs contain mast measurements but no GPS coordinates, turbine model,
-or nameplate capacity. Those values therefore live in STATIONS below as explicit,
-editable configuration. Measured values and derived values are labelled in the
-generated dataset so the API does not imply that estimated generation is SCADA.
+The source CSVs contain mast measurements but no GPS coordinates. Coordinates
+are joined from the supplied site register. The active dataset deliberately
+contains wind and environmental observations only.
 """
 
 from __future__ import annotations
@@ -41,7 +40,7 @@ ARCHIVE_ROOTS = {"Zimbabwe RAW Wind Data", "Wind data"}
 
 # The source archive has no spatial or nameplate metadata. Spatial coordinates
 # come from backend/data/wind_sites.csv and are joined through these explicit
-# aliases. Nameplate capacity remains a clearly-labelled assumption.
+# aliases.
 STATIONS = {
     "chivui": {
         "name": "Chivui Wind Point",
@@ -93,9 +92,6 @@ STATIONS = {
     },
 }
 
-CAPACITY_KW = 2500.0
-
-
 def _number(value: str | None) -> float | None:
     if value is None:
         return None
@@ -119,17 +115,6 @@ def _circular_mean(values: list[float | None]) -> float | None:
         return None
     angle = math.degrees(math.atan2(sum(math.sin(v) for v in present), sum(math.cos(v) for v in present)))
     return angle % 360
-
-
-def _power_curve(wind_speed: float) -> float:
-    """Estimated output for the configured assessment turbine, in kW."""
-    cut_in, rated, cut_out = 3.0, 12.0, 25.0
-    if wind_speed < cut_in or wind_speed >= cut_out:
-        return 0.0
-    if wind_speed >= rated:
-        return CAPACITY_KW
-    fraction = (wind_speed**3 - cut_in**3) / (rated**3 - cut_in**3)
-    return CAPACITY_KW * max(0.0, min(1.0, fraction))
 
 
 def _air_density(temperature_c: float | None, humidity_pct: float | None, air_pressure_hpa: float | None) -> float | None:
@@ -182,6 +167,12 @@ def _reading(row: dict[str, str], turbine_id: int) -> dict | None:
     wind_avg_columns = [key for key in columns if key.endswith(";wind_speed;Avg")]
     wind_min_columns = [key for key in columns if key.endswith(";wind_speed;Min")]
     wind_max_columns = [key for key in columns if key.endswith(";wind_speed;Max")]
+    wind_stddev_columns = [
+        key for key in columns
+        if key.rsplit(";", 1)[-1].strip().lower().replace(".", "").replace("_", "").replace(" ", "")
+        in {"stddev", "stdev", "standarddeviation", "sigma"}
+        and ";wind_speed;" in key.lower()
+    ]
     wind_count_columns = [key for key in columns if key.endswith(";wind_speed;Count")]
     direction_columns = [key for key in columns if key.endswith(";wind_direction;Avg")]
     temperature_columns = [key for key in columns if key.endswith(";temperature;Avg")]
@@ -196,10 +187,10 @@ def _reading(row: dict[str, str], turbine_id: int) -> dict | None:
     wind_speed = wind_speed_raw / 100.0
     minimums = [_number(row.get(key)) for key in wind_min_columns]
     maximums = [_number(row.get(key)) for key in wind_max_columns]
+    standard_deviations = [_number(row.get(key)) for key in wind_stddev_columns]
+    wind_stddev_raw = _mean(standard_deviations)
     sample_counts = [_number(row.get(key)) for key in wind_count_columns]
     quality = _mean([min(value / 600.0, 1.0) * 100 if value is not None else None for value in sample_counts]) or 0.0
-    power_output = _power_curve(wind_speed)
-    interval_energy = power_output / 1000.0 / 6.0
     temperature = _mean([_number(row.get(key)) for key in temperature_columns]) or 0.0
     humidity = _mean([_number(row.get(key)) for key in humidity_columns]) or 0.0
     air_pressure = _mean([_number(row.get(key)) for key in pressure_columns]) or 0.0
@@ -208,6 +199,7 @@ def _reading(row: dict[str, str], turbine_id: int) -> dict | None:
         "turbine_id": turbine_id,
         "timestamp": observed.isoformat(),
         "wind_speed": round(wind_speed, 3),
+        "wind_speed_stddev": round(wind_stddev_raw / 100.0, 3) if wind_stddev_raw is not None else None,
         "wind_speed_min": round(min(value for value in minimums if value is not None) / 100.0, 3) if any(value is not None for value in minimums) else None,
         "wind_speed_max": round(max(value for value in maximums if value is not None) / 100.0, 3) if any(value is not None for value in maximums) else None,
         "wind_direction": round(_circular_mean([_number(row.get(key)) for key in direction_columns]) or 0.0, 2),
@@ -215,16 +207,9 @@ def _reading(row: dict[str, str], turbine_id: int) -> dict | None:
         "humidity": round(humidity, 2),
         "air_pressure": round(air_pressure, 2),
         "air_density": round(_air_density(temperature, humidity, air_pressure) or 0.0, 4),
-        "power_output": round(power_output, 2),
-        "energy_produced_mwh": round(interval_energy, 6),
-        "expected_energy_mwh": round(interval_energy, 6),
-        "estimated_revenue_usd": round(interval_energy * 82.0, 4),
         "availability_pct": round(quality, 2),
-        "capacity_factor_pct": round(power_output / CAPACITY_KW * 100, 2),
         "data_quality_pct": round(quality, 2),
         "measurement_source": "mast",
-        "generation_source": "derived_power_curve",
-        "revenue_source": "derived at configured USD 82/MWh",
     }
 
 
@@ -284,13 +269,9 @@ def import_archive(archive_path: Path, site_path: Path) -> dict:
                 "lat": latitude,
                 "lon": longitude,
                 "location_basis": f"Supplied coordinate file: {site_path.name} ({configuration['coordinate_name']})",
-                "capacity_kw": CAPACITY_KW,
-                "capacity_basis": "Configured assessment-turbine assumption; not supplied by source",
-                "model": "2.5 MW assessment turbine (assumed)",
                 "status": status,
                 "synthetic": False,
                 "telemetry_source": "measured wind mast",
-                "generation_source": "derived power curve",
                 "first_reading_at": rows[0]["timestamp"],
                 "last_reading_at": rows[-1]["timestamp"],
                 "reading_count": len(rows),

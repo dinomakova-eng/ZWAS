@@ -6,3 +6,20 @@
 .workspace:has(.stats) > header h2 {
   margin-top: 0;
 }
+
+.dashboard-summary-cards {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dashboard-summary-cards article[role="button"]:focus-visible {
+  outline: 3px solid #55b9ed;
+  outline-offset: 2px;
+}
+
+@media (max-width: 1150px) {
+  .dashboard-summary-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 850px) {
+  .dashboard-summary-cards { grid-template-columns: 1fr; }
+}

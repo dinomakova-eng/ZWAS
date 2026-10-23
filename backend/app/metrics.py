@@ -1,36 +1,65 @@
-def calculate_metrics(readings, capacity_kw):
+import math
+
+
+def _circular_mean(values):
+    if not values:
+        return None
+    sine = sum(math.sin(math.radians(value)) for value in values)
+    cosine = sum(math.cos(math.radians(value)) for value in values)
+    return math.degrees(math.atan2(sine, cosine)) % 360
+
+
+def _population_stddev(values, interval_stddevs=None):
+    if not values:
+        return 0.0
+    centre = sum(values) / len(values)
+    interval_stddevs = interval_stddevs or [0.0 for _ in values]
+    return math.sqrt(sum(
+        interval_stddev ** 2 + (value - centre) ** 2
+        for value, interval_stddev in zip(values, interval_stddevs)
+    ) / len(values))
+
+
+def calculate_metrics(readings):
+    """Summarise measured wind and environmental telemetry."""
     if not readings:
-        return {"average_wind_speed": 0, "min_wind_speed": 0, "max_wind_speed": 0, "total_power_output": 0, "capacity_factor": 0, "uptime": 0, "anomalies": 0}
-    winds = [r["wind_speed"] for r in readings]
-    power = [r["power_output"] for r in readings]
-    anomalies = sum(1 for a, b in zip(power, power[1:]) if a - b > capacity_kw * .55)
-    energy_kwh = sum(r.get("energy_produced_mwh", 0) for r in readings) * 1000
-    total_output = energy_kwh if energy_kwh else sum(power)
-    availability = [r.get("availability_pct") for r in readings if r.get("availability_pct") is not None]
-    uptime = sum(availability) / len(availability) if availability else sum(p > 0 for p in power) / len(power) * 100
-    latest_by_point = {}
-    for reading in readings:
-        point_id = reading.get("turbine_id")
-        if point_id is not None:
-            latest_by_point[point_id] = reading
-    environmental = lambda name: [r[name] for r in readings if r.get(name) is not None]
-    quality = environmental("data_quality_pct")
-    temperatures = environmental("temperature")
-    humidity = environmental("humidity")
-    pressure = environmental("air_pressure")
-    density = environmental("air_density")
-    energy_mwh = sum(r.get("energy_produced_mwh", 0) for r in readings)
-    revenue = sum(r.get("estimated_revenue_usd", r.get("energy_produced_mwh", 0) * 82) for r in readings)
+        return {
+            "average_wind_speed": 0,
+            "wind_speed_stddev": 0,
+            "min_wind_speed": 0,
+            "max_wind_speed": 0,
+            "average_wind_direction": None,
+            "uptime": 0,
+            "data_quality_pct": 0,
+            "reporting_points": 0,
+            "records": 0,
+        }
+
+    winds = [float(reading["wind_speed"]) for reading in readings]
+    wind_stddevs = [float(reading.get("wind_speed_stddev") or 0.0) for reading in readings]
+    minimums = [float(reading.get("wind_speed_min", reading["wind_speed"])) for reading in readings]
+    maximums = [float(reading.get("wind_speed_max", reading["wind_speed"])) for reading in readings]
+    directions = [float(reading["wind_direction"]) for reading in readings if reading.get("wind_direction") is not None]
+    availability = [float(reading["availability_pct"]) for reading in readings if reading.get("availability_pct") is not None]
+    quality = [float(reading["data_quality_pct"]) for reading in readings if reading.get("data_quality_pct") is not None]
+    temperatures = [float(reading["temperature"]) for reading in readings if reading.get("temperature") is not None]
+    humidity = [float(reading["humidity"]) for reading in readings if reading.get("humidity") is not None]
+    pressure = [float(reading["air_pressure"]) for reading in readings if reading.get("air_pressure") is not None]
+    density = [float(reading["air_density"]) for reading in readings if reading.get("air_density") is not None]
+    latest_by_point = {
+        reading["turbine_id"]: reading
+        for reading in readings
+        if reading.get("turbine_id") is not None
+    }
+    direction = _circular_mean(directions)
+
     return {
-        "average_wind_speed": round(sum(winds)/len(winds), 2),
-        "min_wind_speed": min(winds),
-        "max_wind_speed": max(winds),
-        "total_power_output": round(total_output, 1),
-        "current_power_output_kw": round(sum(r["power_output"] for r in latest_by_point.values()) if latest_by_point else power[-1], 2),
-        "energy_mwh": round(energy_mwh, 3),
-        "estimated_revenue_usd": round(revenue, 2),
-        "capacity_factor": round(sum(power)/(len(power)*capacity_kw)*100, 1) if capacity_kw else 0,
-        "uptime": round(uptime, 1),
+        "average_wind_speed": round(sum(winds) / len(winds), 2),
+        "wind_speed_stddev": round(_population_stddev(winds, wind_stddevs), 2),
+        "min_wind_speed": round(min(minimums), 2),
+        "max_wind_speed": round(max(maximums), 2),
+        "average_wind_direction": round(direction, 1) if direction is not None else None,
+        "uptime": round(sum(availability) / len(availability), 1) if availability else 0,
         "data_quality_pct": round(sum(quality) / len(quality), 2) if quality else 0,
         "average_temperature_c": round(sum(temperatures) / len(temperatures), 2) if temperatures else None,
         "average_humidity_pct": round(sum(humidity) / len(humidity), 2) if humidity else None,
@@ -40,5 +69,4 @@ def calculate_metrics(readings, capacity_kw):
         "records": len(readings),
         "first_reading_at": readings[0].get("timestamp"),
         "last_reading_at": readings[-1].get("timestamp"),
-        "anomalies": anomalies,
     }

@@ -2,15 +2,14 @@ import './reports-workspace.css';
 import {getApiData, prefetchAnalytics} from './data-client';
 import {navigateApp} from './navigation';
 
-type Asset = {id: number; name: string; region: string; district: string; source_folder: string; source_id: string; latest_power_output?: number};
-type DailyReading = {turbine_id: number; date: string; records: number; wind_speed?: number; power_output?: number; temperature?: number; humidity?: number; air_pressure?: number; air_density?: number; availability_pct?: number; capacity_factor_pct?: number; data_quality_pct?: number; energy_produced_mwh?: number; estimated_revenue_usd?: number};
-type MetricKey = 'reporting' | 'records' | 'wind' | 'minWind' | 'maxWind' | 'availability' | 'quality' | 'temperature' | 'humidity' | 'pressure' | 'density' | 'latest' | 'energy' | 'power' | 'capacity' | 'revenue';
-type PointResult = Asset & {reporting: number; records: number; wind: number; minWind: number; maxWind: number; availability: number; quality: number; temperature: number; humidity: number; pressure: number; density: number; latest: string; energy: number; power: number; capacity: number; revenue: number};
+type Asset = {id: number; name: string; region: string; district: string; source_folder: string; source_id: string};
+type DailyReading = {turbine_id: number; date: string; records: number; wind_speed?: number; wind_speed_min?: number; wind_speed_max?: number; wind_direction?: number; temperature?: number; humidity?: number; air_pressure?: number; air_density?: number; availability_pct?: number; data_quality_pct?: number};
+type MetricKey = 'reporting' | 'records' | 'wind' | 'minWind' | 'maxWind' | 'direction' | 'availability' | 'quality' | 'temperature' | 'humidity' | 'pressure' | 'density' | 'latest';
+type PointResult = Asset & {reporting: number; records: number; wind: number; minWind: number; maxWind: number; direction: number; availability: number; quality: number; temperature: number; humidity: number; pressure: number; density: number; latest: string};
 
 const reportGroups = [
-  ['Measured Wind Summary', ['Reporting Wind Points', 'Telemetry Records', 'Average Wind Speed', 'Minimum Wind Speed', 'Maximum Wind Speed', 'Data Availability']],
+  ['Measured Wind Summary', ['Reporting Wind Points', 'Telemetry Records', 'Average Wind Speed', 'Minimum Wind Speed', 'Maximum Wind Speed', 'Average Wind Direction', 'Data Availability']],
   ['Environmental Summary', ['Average Temperature', 'Average Humidity', 'Average Air Pressure', 'Average Air Density', 'Latest Source Record']],
-  ['Derived Assessment Measures', ['Estimated Energy', 'Current Estimated Power', 'Assessment Capacity Factor', 'Estimated Revenue']],
   ['Analysis Library', ['Wind Resource Analysis', 'Site Comparison', 'Environmental Conditions', 'Data Quality and Coverage', 'Measured-data Forecast']],
 ] as const;
 
@@ -18,23 +17,20 @@ const reportDefinitions: Record<string, {metric: MetricKey; description: string;
   'Reporting Wind Points': {metric: 'reporting', description: 'Wind measurement points contributing records to the selected source window.', source: 'Imported logger coverage'},
   'Telemetry Records': {metric: 'records', description: 'Imported telemetry samples represented by the selected wind points and time window.', source: 'Imported logger records'},
   'Average Wind Speed': {metric: 'wind', description: 'Record-weighted mean wind speed for the active reporting scope.', source: 'Measured wind telemetry'},
-  'Minimum Wind Speed': {metric: 'minWind', description: 'Lowest daily mean wind speed observed within the active reporting scope.', source: 'Measured daily aggregates'},
-  'Maximum Wind Speed': {metric: 'maxWind', description: 'Highest daily mean wind speed observed within the active reporting scope.', source: 'Measured daily aggregates'},
+  'Minimum Wind Speed': {metric: 'minWind', description: 'Lowest source minimum wind speed observed within the active reporting scope.', source: 'Measured wind telemetry'},
+  'Maximum Wind Speed': {metric: 'maxWind', description: 'Highest source maximum wind speed observed within the active reporting scope.', source: 'Measured wind telemetry'},
+  'Average Wind Direction': {metric: 'direction', description: 'Circular mean wind direction within the active reporting scope.', source: 'Measured wind-direction channel'},
   'Data Availability': {metric: 'availability', description: 'Record-weighted logger availability for the selected source window.', source: 'Logger availability channel'},
   'Average Temperature': {metric: 'temperature', description: 'Record-weighted ambient temperature across the selected wind points.', source: 'Measured environmental telemetry'},
   'Average Humidity': {metric: 'humidity', description: 'Record-weighted relative humidity across the selected wind points.', source: 'Measured environmental telemetry'},
   'Average Air Pressure': {metric: 'pressure', description: 'Record-weighted air pressure across the selected wind points.', source: 'Measured environmental telemetry'},
   'Average Air Density': {metric: 'density', description: 'Record-weighted moist-air density calculated from pressure, temperature, and relative humidity.', source: 'Calculated environmental telemetry'},
   'Latest Source Record': {metric: 'latest', description: 'Most recent logger date represented by the active filters.', source: 'Imported source timestamps'},
-  'Estimated Energy': {metric: 'energy', description: 'Estimated energy accumulated during the selected source window.', source: 'Wind energy formula'},
-  'Current Estimated Power': {metric: 'power', description: 'Combined latest estimated power for the selected wind points.', source: 'Wind energy formula'},
-  'Assessment Capacity Factor': {metric: 'capacity', description: 'Record-weighted assessment capacity factor for the selected source window.', source: 'Derived assessment measure'},
-  'Estimated Revenue': {metric: 'revenue', description: 'Estimated revenue associated with derived energy in the selected source window.', source: 'Derived assessment measure'},
   'Wind Resource Analysis': {metric: 'wind', description: 'Comparison of measured average wind resource across the selected wind points.', source: 'Measured wind telemetry'},
   'Site Comparison': {metric: 'wind', description: 'Side-by-side measured wind comparison for sites in the active scope.', source: 'Measured wind telemetry'},
   'Environmental Conditions': {metric: 'density', description: 'Site-level density conditions with temperature, humidity, and pressure context.', source: 'Measured and calculated environmental telemetry'},
   'Data Quality and Coverage': {metric: 'quality', description: 'Site-level quality, record volume, and latest-source coverage.', source: 'Imported logger coverage'},
-  'Measured-data Forecast': {metric: 'wind', description: 'Per-site regression forecasts validated against a statistical baseline with automatic fallback.', source: 'Validated regression and baseline selection'},
+  'Measured-data Forecast': {metric: 'wind', description: 'Per-site wind forecasts validated against statistical baselines with automatic fallback.', source: 'Validated regression and baseline selection'},
 };
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
@@ -44,14 +40,20 @@ const average = (rows: DailyReading[], field: keyof DailyReading) => {
   const records = sum(available.map(row => row.records));
   return records ? sum(available.map(row => safe(row[field]) * row.records)) / records : 0;
 };
+const circularAverage = (rows: DailyReading[]) => {
+  const available = rows.filter(row => row.wind_direction != null);
+  const sine = sum(available.map(row => Math.sin(Number(row.wind_direction) * Math.PI / 180) * row.records));
+  const cosine = sum(available.map(row => Math.cos(Number(row.wind_direction) * Math.PI / 180) * row.records));
+  return available.length ? (Math.atan2(sine, cosine) * 180 / Math.PI + 360) % 360 : 0;
+};
+const directionDifference = (left: number, right: number) => ((left - right + 540) % 360) - 180;
 const number = (value: number, digits = 2) => new Intl.NumberFormat('en-US', {maximumFractionDigits: digits}).format(value);
-const metricUnit = (metric: MetricKey) => ({wind: 'm/s', minWind: 'm/s', maxWind: 'm/s', availability: '%', quality: '%', temperature: '°C', humidity: '%', pressure: 'hPa', density: 'kg/m3', energy: 'MWh', power: 'MW', capacity: '%', revenue: 'USD', records: 'records', reporting: 'points', latest: ''}[metric]);
+const metricUnit = (metric: MetricKey) => ({wind: 'm/s', minWind: 'm/s', maxWind: 'm/s', direction: '°', availability: '%', quality: '%', temperature: '°C', humidity: '%', pressure: 'hPa', density: 'kg/m3', records: 'records', reporting: 'points', latest: ''}[metric]);
 const formatMetric = (metric: MetricKey, value: number | string) => {
   if (metric === 'latest') return String(value || '—');
-  if (metric === 'revenue') return `$${number(Number(value))}`;
   if (metric === 'records') return Number(value).toLocaleString();
   if (metric === 'reporting') return `${number(Number(value), 0)} point${Number(value) === 1 ? '' : 's'}`;
-  return `${number(Number(value), metric === 'density' ? 4 : metric === 'energy' || metric === 'power' ? 3 : 2)} ${metricUnit(metric)}`.trim();
+  return `${number(Number(value), metric === 'density' ? 4 : metric === 'direction' ? 1 : 2)} ${metricUnit(metric)}`.trim();
 };
 
 const dispose = () => {
@@ -96,29 +98,29 @@ const enhance = async () => {
     const pointsInRegion = () => assets.filter(point => state.region === 'All regions' || point.region === state.region);
     const selectedPoints = () => pointsInRegion().filter(point => state.point === 'All wind points' || String(point.id) === state.point);
     const rowsFor = (point: Asset, rows = sourceRows()) => rows.filter(row => row.turbine_id === point.id).slice(-state.days);
-    const buildPointResult = (point: Asset, rows: DailyReading[], latestPower?: number): PointResult => {
-      const winds = rows.map(row => safe(row.wind_speed));
-      return {...point, reporting: rows.length ? 1 : 0, records: sum(rows.map(row => row.records)), wind: average(rows, 'wind_speed'), minWind: winds.length ? Math.min(...winds) : 0, maxWind: winds.length ? Math.max(...winds) : 0, availability: average(rows, 'availability_pct'), quality: average(rows, 'data_quality_pct'), temperature: average(rows, 'temperature'), humidity: average(rows, 'humidity'), pressure: average(rows, 'air_pressure'), density: average(rows, 'air_density'), latest: rows[rows.length - 1]?.date || '—', energy: sum(rows.map(row => safe(row.energy_produced_mwh))), power: safe(latestPower ?? point.latest_power_output) / 1000, capacity: average(rows, 'capacity_factor_pct'), revenue: sum(rows.map(row => safe(row.estimated_revenue_usd)))};
+    const buildPointResult = (point: Asset, rows: DailyReading[]): PointResult => {
+      const minimums = rows.map(row => safe(row.wind_speed_min ?? row.wind_speed));
+      const maximums = rows.map(row => safe(row.wind_speed_max ?? row.wind_speed));
+      return {...point, reporting: rows.length ? 1 : 0, records: sum(rows.map(row => row.records)), wind: average(rows, 'wind_speed'), minWind: minimums.length ? Math.min(...minimums) : 0, maxWind: maximums.length ? Math.max(...maximums) : 0, direction: circularAverage(rows), availability: average(rows, 'availability_pct'), quality: average(rows, 'data_quality_pct'), temperature: average(rows, 'temperature'), humidity: average(rows, 'humidity'), pressure: average(rows, 'air_pressure'), density: average(rows, 'air_density'), latest: rows[rows.length - 1]?.date || '—'};
     };
     const pointResults = (): PointResult[] => selectedPoints().map(point => {
       if (state.source !== 'difference') {
         const sourcePoint = sourceAssets().find(item => item.id === point.id) || point;
-        return buildPointResult(sourcePoint, rowsFor(point), sourcePoint.latest_power_output);
+        return buildPointResult(sourcePoint, rowsFor(point));
       }
-      const mast = buildPointResult(point, rowsFor(point, dailyRows), point.latest_power_output);
+      const mast = buildPointResult(point, rowsFor(point, dailyRows));
       const livePoint = liveAssets.find(item => item.id === point.id) || point;
-      const live = buildPointResult(livePoint, rowsFor(point, liveDailyRows), livePoint.latest_power_output);
-      return {...point, reporting: Math.max(mast.reporting, live.reporting), records: live.records - mast.records, wind: live.wind - mast.wind, minWind: live.minWind - mast.minWind, maxWind: live.maxWind - mast.maxWind, availability: live.availability - mast.availability, quality: live.quality - mast.quality, temperature: live.temperature - mast.temperature, humidity: live.humidity - mast.humidity, pressure: live.pressure - mast.pressure, density: live.density - mast.density, latest: live.latest, energy: live.energy - mast.energy, power: live.power - mast.power, capacity: live.capacity - mast.capacity, revenue: live.revenue - mast.revenue};
+      const live = buildPointResult(livePoint, rowsFor(point, liveDailyRows));
+      return {...point, reporting: Math.max(mast.reporting, live.reporting), records: live.records - mast.records, wind: live.wind - mast.wind, minWind: live.minWind - mast.minWind, maxWind: live.maxWind - mast.maxWind, direction: directionDifference(live.direction, mast.direction), availability: live.availability - mast.availability, quality: live.quality - mast.quality, temperature: live.temperature - mast.temperature, humidity: live.humidity - mast.humidity, pressure: live.pressure - mast.pressure, density: live.density - mast.density, latest: live.latest};
     });
     const allRows = () => selectedPoints().flatMap(point => rowsFor(point));
     const summary = () => {
       const points = pointResults();
       const rows = allRows();
-      const winds = rows.map(row => safe(row.wind_speed));
       const dates = rows.map(row => row.date).sort();
       const latest = dates[dates.length - 1] || '—';
-      if (state.source === 'difference') return {points, values: {reporting: sum(points.map(point => point.reporting)), records: sum(points.map(point => point.records)), wind: sum(points.map(point => point.wind)) / Math.max(points.length, 1), minWind: sum(points.map(point => point.minWind)) / Math.max(points.length, 1), maxWind: sum(points.map(point => point.maxWind)) / Math.max(points.length, 1), availability: sum(points.map(point => point.availability)) / Math.max(points.length, 1), quality: sum(points.map(point => point.quality)) / Math.max(points.length, 1), temperature: sum(points.map(point => point.temperature)) / Math.max(points.length, 1), humidity: sum(points.map(point => point.humidity)) / Math.max(points.length, 1), pressure: sum(points.map(point => point.pressure)) / Math.max(points.length, 1), density: sum(points.map(point => point.density)) / Math.max(points.length, 1), latest, energy: sum(points.map(point => point.energy)), power: sum(points.map(point => point.power)), capacity: sum(points.map(point => point.capacity)) / Math.max(points.length, 1), revenue: sum(points.map(point => point.revenue))} as Record<MetricKey, number | string>};
-      return {points, values: {reporting: sum(points.map(point => point.reporting)), records: sum(rows.map(row => row.records)), wind: average(rows, 'wind_speed'), minWind: winds.length ? Math.min(...winds) : 0, maxWind: winds.length ? Math.max(...winds) : 0, availability: average(rows, 'availability_pct'), quality: average(rows, 'data_quality_pct'), temperature: average(rows, 'temperature'), humidity: average(rows, 'humidity'), pressure: average(rows, 'air_pressure'), density: average(rows, 'air_density'), latest, energy: sum(rows.map(row => safe(row.energy_produced_mwh))), power: sum(points.map(point => point.power)), capacity: average(rows, 'capacity_factor_pct'), revenue: sum(rows.map(row => safe(row.estimated_revenue_usd)))} as Record<MetricKey, number | string>};
+      if (state.source === 'difference') return {points, values: {reporting: sum(points.map(point => point.reporting)), records: sum(points.map(point => point.records)), wind: sum(points.map(point => point.wind)) / Math.max(points.length, 1), minWind: sum(points.map(point => point.minWind)) / Math.max(points.length, 1), maxWind: sum(points.map(point => point.maxWind)) / Math.max(points.length, 1), direction: sum(points.map(point => point.direction)) / Math.max(points.length, 1), availability: sum(points.map(point => point.availability)) / Math.max(points.length, 1), quality: sum(points.map(point => point.quality)) / Math.max(points.length, 1), temperature: sum(points.map(point => point.temperature)) / Math.max(points.length, 1), humidity: sum(points.map(point => point.humidity)) / Math.max(points.length, 1), pressure: sum(points.map(point => point.pressure)) / Math.max(points.length, 1), density: sum(points.map(point => point.density)) / Math.max(points.length, 1), latest} as Record<MetricKey, number | string>};
+      return {points, values: {reporting: sum(points.map(point => point.reporting)), records: sum(rows.map(row => row.records)), wind: average(rows, 'wind_speed'), minWind: points.length ? Math.min(...points.map(point => point.minWind)) : 0, maxWind: points.length ? Math.max(...points.map(point => point.maxWind)) : 0, direction: circularAverage(rows), availability: average(rows, 'availability_pct'), quality: average(rows, 'data_quality_pct'), temperature: average(rows, 'temperature'), humidity: average(rows, 'humidity'), pressure: average(rows, 'air_pressure'), density: average(rows, 'air_density'), latest} as Record<MetricKey, number | string>};
     };
     const reportValue = (name: string, result: ReturnType<typeof summary>) => {
       const metric = reportDefinitions[name]?.metric || 'wind';

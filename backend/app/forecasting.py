@@ -6,14 +6,6 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from math import cos, pi, sin, sqrt
 
-from .wind_energy import wind_power_kw
-
-
-def power_from_wind(wind_speed: float, capacity_kw: float, air_density: float | None = None) -> float:
-    """Calculate formula power in kW from wind speed, density, swept area, and Cp."""
-    return wind_power_kw(wind_speed, air_density, capacity_kw)
-
-
 def _daily_metric(readings: list[dict], metric: str) -> list[tuple[date, float]]:
     grouped = defaultdict(list)
     for reading in readings:
@@ -21,6 +13,28 @@ def _daily_metric(readings: list[dict], metric: str) -> list[tuple[date, float]]
         if value is not None:
             grouped[datetime.fromisoformat(reading["timestamp"]).date()].append(float(value))
     return [(day, sum(values) / len(values)) for day, values in sorted(grouped.items())]
+
+
+def _daily_metric_stddev(readings: list[dict], metric: str) -> list[tuple[date, float]]:
+    """Combine within-interval and between-interval population variance by day."""
+    grouped = defaultdict(list)
+    for reading in readings:
+        value = reading.get(metric)
+        if value is None:
+            continue
+        interval_stddev = reading.get(f"{metric}_stddev")
+        grouped[datetime.fromisoformat(reading["timestamp"]).date()].append(
+            (float(value), float(interval_stddev) if interval_stddev is not None else 0.0)
+        )
+    result = []
+    for day, values in sorted(grouped.items()):
+        centre = _mean([value for value, _ in values])
+        variance = _mean([
+            interval_stddev ** 2 + (value - centre) ** 2
+            for value, interval_stddev in values
+        ])
+        result.append((day, sqrt(max(0.0, variance))))
+    return result
 
 
 def _daily_wind(readings: list[dict]) -> list[tuple[date, float]]:
@@ -163,15 +177,24 @@ def _select_model(daily: list[tuple[date, float]]) -> dict:
     }
 
 
-def _series_forecast(readings: list[dict], start: date, days: int, capacity_kw: float) -> tuple[list[dict], float | None, int, dict]:
+def _series_forecast(readings: list[dict], start: date, days: int) -> tuple[list[dict], float | None, int, dict]:
     daily = _daily_wind(readings)
-    recent = daily[-90:] or daily
     targets = [start + timedelta(days=index) for index in range(days)]
     diagnostics = _select_model(daily)
     baseline_forecast = _baseline_values(daily, targets)
     regression_forecast = _regression_values(daily, targets)
     use_regression = diagnostics["selected_model"] == "autoregressive_regression" and regression_forecast is not None
     wind_forecast = regression_forecast if use_regression else baseline_forecast
+
+    variability_daily = _daily_metric_stddev(readings, "wind_speed")
+    variability_diagnostics = _select_model(variability_daily)
+    variability_baseline = _baseline_values(variability_daily, targets)
+    variability_regression = _regression_values(variability_daily, targets)
+    use_variability_regression = (
+        variability_diagnostics["selected_model"] == "autoregressive_regression"
+        and variability_regression is not None
+    )
+    variability_forecast = variability_regression if use_variability_regression else variability_baseline
 
     density_daily = _daily_metric(readings, "air_density")
     density_diagnostics = _select_model(density_daily)
@@ -186,23 +209,21 @@ def _series_forecast(readings: list[dict], start: date, days: int, capacity_kw: 
 
     selected_mae = diagnostics["regression_mae"] if use_regression else diagnostics["baseline_mae"]
     mae = float(selected_mae) if selected_mae is not None else None
-    recent_mean = _mean([value for _, value in recent])
-    variance = _mean([(value - recent_mean) ** 2 for _, value in recent])
-    uncertainty = max(0.25, mae or 0.0, sqrt(variance) * 0.55)
 
     result = []
     for index, forecast_date in enumerate(targets):
         wind = max(0.0, wind_forecast[index])
+        variability = max(0.0, variability_forecast[index])
+        uncertainty = max(0.25, sqrt(variability ** 2 + (mae or 0.0) ** 2))
         lower = max(0.0, wind - uncertainty * 1.64)
         upper = wind + uncertainty * 1.64
         density = density_forecast[index]
-        power = power_from_wind(wind, capacity_kw, density)
         result.append(
             {
                 "date": forecast_date.isoformat(),
                 "wind_speed": round(wind, 3),
-                "power_output": round(power, 2),
-                "energy_mwh": round(power * 24 / 1000, 4),
+                "_wind_speed_stddev": round(variability, 3),
+                "_forecast_uncertainty": round(uncertainty, 3),
                 "air_density": round(density, 4),
                 "lower": round(lower, 3),
                 "upper": round(upper, 3),
@@ -215,8 +236,8 @@ def build_forecast(turbines: list[dict], readings_by_turbine: dict[int, list[dic
     dated_rows = [rows for rows in readings_by_turbine.values() if rows]
     if not dated_rows:
         return {
-            "model_version": "validated-regression-baseline-2.0",
-            "model_basis": "per-site autoregressive regression for wind speed and air density, selected against statistical baselines by rolling-validation MAE, with baseline fallback",
+            "model_version": "validated-regression-2.1",
+            "model_basis": "per-site forecasts for mean wind and air density; models are selected against statistical baselines by rolling-validation MAE",
             "backtest_mae": None,
             "validation": {"strategy": "per-site rolling-origin validation", "regression_sites": 0, "baseline_sites": 0},
             "models_by_turbine": {},
@@ -239,9 +260,7 @@ def build_forecast(turbines: list[dict], readings_by_turbine: dict[int, list[dic
         if not readings_by_turbine[turbine["id"]]:
             by_turbine[str(turbine["id"])] = []
             continue
-        rows, mae, count, diagnostics = _series_forecast(
-            readings_by_turbine[turbine["id"]], start, days, turbine["capacity_kw"]
-        )
+        rows, mae, count, diagnostics = _series_forecast(readings_by_turbine[turbine["id"]], start, days)
         by_turbine[str(turbine["id"])] = rows
         models_by_turbine[str(turbine["id"])] = diagnostics
         if mae is not None:
@@ -253,24 +272,28 @@ def build_forecast(turbines: list[dict], readings_by_turbine: dict[int, list[dic
         point_rows = [rows[index] for rows in by_turbine.values() if len(rows) > index]
         if not point_rows:
             continue
+        fleet_wind = _mean([row["wind_speed"] for row in point_rows])
+        fleet_uncertainty = sqrt(_mean([
+            row["_forecast_uncertainty"] ** 2 + (row["wind_speed"] - fleet_wind) ** 2
+            for row in point_rows
+        ]))
         fleet.append(
             {
                 "date": point_rows[0]["date"],
-                "wind_speed": round(_mean([row["wind_speed"] for row in point_rows]), 3),
-                "power_output": round(sum(row["power_output"] for row in point_rows), 2),
-                "energy_mwh": round(sum(row["energy_mwh"] for row in point_rows), 4),
+                "wind_speed": round(fleet_wind, 3),
                 "air_density": round(_mean([row["air_density"] for row in point_rows]), 4),
-                "lower": round(_mean([row["lower"] for row in point_rows]), 3),
-                "upper": round(_mean([row["upper"] for row in point_rows]), 3),
+                "lower": round(max(0.0, fleet_wind - fleet_uncertainty * 1.64), 3),
+                "upper": round(fleet_wind + fleet_uncertainty * 1.64, 3),
             }
         )
     return {
-        "model_version": "validated-regression-baseline-2.0",
-        "model_basis": "per-site autoregressive regression for wind speed and air density, selected against statistical baselines by rolling-validation MAE, with baseline fallback",
+        "model_version": "validated-regression-2.1",
+        "model_basis": "per-site forecasts for mean wind and air density; models are selected against statistical baselines by rolling-validation MAE",
         "backtest_mae": round(_mean(maes), 3) if maes else None,
         "validation": {
             "strategy": "per-site rolling-origin validation",
             "metric": "mean absolute error (m/s)",
+            "interval_basis": "90% planning interval combines source-observation spread with validated mean-forecast MAE",
             "regression_sites": sum(model["selected_model"] == "autoregressive_regression" for model in models_by_turbine.values()),
             "baseline_sites": sum(model["selected_model"] == "statistical_baseline" for model in models_by_turbine.values()),
         },
@@ -282,5 +305,11 @@ def build_forecast(turbines: list[dict], readings_by_turbine: dict[int, list[dic
             "wind_points": len(turbines),
         },
         "data": fleet,
-        "by_turbine": by_turbine,
+        "by_turbine": {
+            turbine_id: [
+                {key: value for key, value in row.items() if not key.startswith("_")}
+                for row in rows
+            ]
+            for turbine_id, rows in by_turbine.items()
+        },
     }

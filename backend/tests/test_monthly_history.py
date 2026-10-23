@@ -1,4 +1,4 @@
-from app.data import monthly_history
+from app.data import latest_reported_month, monthly_history
 
 
 def test_monthly_history_covers_archive_years_and_metrics():
@@ -7,7 +7,8 @@ def test_monthly_history_covers_archive_years_and_metrics():
     assert 2025 in history["years"]
     assert 2026 in history["years"]
     assert {metric["key"] for metric in history["metrics"]} == {
-        "wind_speed", "temperature", "humidity", "air_pressure", "air_density",
+        "wind_speed", "wind_speed_min", "wind_speed_max", "wind_direction",
+        "temperature", "humidity", "air_pressure", "air_density",
         "availability_pct", "data_quality_pct",
     }
     assert all(month["records"] > 0 for month in history["months"])
@@ -21,3 +22,11 @@ def test_monthly_history_covers_archive_years_and_metrics():
         sum(point["records"] for point in day["points"]) == day["records"]
         for month in history["months"] for day in month["days"]
     )
+
+
+def test_latest_reported_month_uses_the_last_month_with_mast_records():
+    latest = latest_reported_month()
+
+    assert latest is not None
+    assert latest["key"] == monthly_history()["months"][-1]["key"]
+    assert latest["records"] > 0

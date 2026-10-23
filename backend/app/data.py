@@ -10,10 +10,47 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
-from .wind_energy import enrich_energy_reading, get_wind_energy_settings
-
 DATASET = Path(__file__).resolve().parents[1] / "data" / "wind_points.json.gz"
 GIS_DIR = Path(__file__).resolve().parents[1] / "data" / "gis"
+
+# The source archive previously contained formula-derived generation fields.
+# Keep those implementation details out of the active wind-measurement model;
+# the dormant formula itself remains in wind_energy.py for later use.
+DERIVED_ENERGY_FIELDS = {
+    "power_output",
+    "energy_produced_mwh",
+    "expected_energy_mwh",
+    "estimated_revenue_usd",
+    "capacity_factor_pct",
+    "generation_source",
+    "revenue_source",
+    "energy_formula",
+    "rotor_swept_area_m2",
+}
+DERIVED_ASSET_FIELDS = {"capacity_kw", "capacity_basis", "model", "generation_source"}
+
+
+def wind_speed_stddev(values):
+    """Return population standard deviation for the available wind samples."""
+    present = [float(value) for value in values if value is not None]
+    if not present:
+        return None
+    centre = sum(present) / len(present)
+    return math.sqrt(sum((value - centre) ** 2 for value in present) / len(present))
+
+
+def pooled_wind_speed_stddev(readings):
+    """Pool optional interval variance with variance between interval means."""
+    present = [reading for reading in readings if reading.get("wind_speed") is not None]
+    if not present:
+        return None
+    centre = sum(float(reading["wind_speed"]) for reading in present) / len(present)
+    variance = sum(
+        float(reading.get("wind_speed_stddev") or 0.0) ** 2
+        + (float(reading["wind_speed"]) - centre) ** 2
+        for reading in present
+    ) / len(present)
+    return math.sqrt(max(0.0, variance))
 
 
 def air_density_kg_m3(temperature_c, humidity_pct, air_pressure_hpa):
@@ -51,6 +88,7 @@ def _point_in_geometry(point, geometry):
     )
 
 
+@lru_cache(maxsize=2)
 def _gis_features(name):
     with (GIS_DIR / f"zetdc-{name}.geojson").open() as source:
         return json.load(source)["features"]
@@ -77,6 +115,17 @@ def _gis_assignment(longitude, latitude, regions, districts):
     }
 
 
+@lru_cache(maxsize=4096)
+def gis_assignment(longitude: float, latitude: float) -> dict:
+    """Return the ZETDC region and district containing a WGS84 point."""
+    return _gis_assignment(
+        float(longitude),
+        float(latitude),
+        _gis_features("regions"),
+        _gis_features("districts"),
+    )
+
+
 def _load_dataset():
     if not DATASET.exists():
         raise RuntimeError(
@@ -86,14 +135,13 @@ def _load_dataset():
     with gzip.open(DATASET, "rt", encoding="utf-8") as source:
         dataset = json.load(source)
     readings_by_turbine = defaultdict(list)
-    capacity_by_id = {station["id"]: station.get("capacity_kw", 2500.0) for station in dataset["stations"]}
-    energy_settings = get_wind_energy_settings()
     for reading in dataset["readings"]:
+        for field in DERIVED_ENERGY_FIELDS:
+            reading.pop(field, None)
         reading["air_density"] = round(
             air_density_kg_m3(reading.get("temperature"), reading.get("humidity"), reading.get("air_pressure")) or 0.0,
             4,
         )
-        enrich_energy_reading(reading, capacity_by_id.get(reading["turbine_id"], 2500.0), settings=energy_settings)
         readings_by_turbine[reading["turbine_id"]].append(reading)
     regions = _gis_features("regions")
     districts = _gis_features("districts")
@@ -103,13 +151,16 @@ def _load_dataset():
         latest = rows[-1]
         latest_at = datetime.fromisoformat(latest["timestamp"])
         recent = [row for row in rows if datetime.fromisoformat(row["timestamp"]) >= latest_at - timedelta(days=1)]
+        recent_winds = [row.get("wind_speed") for row in recent]
         assets.append(
             {
-                **station,
+                **{key: value for key, value in station.items() if key not in DERIVED_ASSET_FIELDS},
                 **_gis_assignment(station["lon"], station["lat"], regions, districts),
-                "average_wind_speed": round(sum(row["wind_speed"] for row in recent) / len(recent), 2),
+                "average_wind_speed": round(sum(recent_winds) / len(recent_winds), 2),
+                "wind_speed_stddev": round(pooled_wind_speed_stddev(recent) or 0.0, 2),
                 "latest_wind_speed": latest["wind_speed"],
-                "latest_power_output": latest["power_output"],
+                "minimum_wind_speed": round(min(row.get("wind_speed_min", row["wind_speed"]) for row in recent), 2),
+                "maximum_wind_speed": round(max(row.get("wind_speed_max", row["wind_speed"]) for row in recent), 2),
                 "latest_wind_direction": latest["wind_direction"],
                 "latest_temperature": latest["temperature"],
                 "latest_humidity": latest["humidity"],
@@ -124,19 +175,6 @@ TURBINES, ALL_READINGS, DATA_SOURCE = _load_dataset()
 READINGS_BY_TURBINE = defaultdict(list)
 for reading in ALL_READINGS:
     READINGS_BY_TURBINE[reading["turbine_id"]].append(reading)
-
-
-def refresh_energy_calculations():
-    settings = get_wind_energy_settings()
-    capacity_by_id = {asset["id"]: asset.get("capacity_kw", 2500.0) for asset in TURBINES}
-    for reading in ALL_READINGS:
-        enrich_energy_reading(reading, capacity_by_id.get(reading["turbine_id"], 2500.0), settings=settings)
-    for asset in TURBINES:
-        rows = READINGS_BY_TURBINE[asset["id"]]
-        if rows:
-            asset["latest_power_output"] = rows[-1]["power_output"]
-    daily_summaries.cache_clear()
-    monthly_history.cache_clear()
 
 
 def turbines():
@@ -162,12 +200,12 @@ def daily_summaries_for(readings_by_turbine, days: int):
     """Return compact per-point daily aggregates for interactive analytics.
 
     Sending raw 10-minute logger samples made the analytics screens download the
-    entire archive. This keeps the same measured/derived results while reducing
+    entire archive. This keeps the same measured results while reducing
     the 90-day response from tens of thousands of rows to a few hundred.
     """
-    fields = (
-        "wind_speed", "power_output", "temperature", "humidity", "air_pressure", "air_density",
-        "availability_pct", "capacity_factor_pct", "data_quality_pct",
+    average_fields = (
+        "wind_speed", "temperature", "humidity", "air_pressure", "air_density",
+        "availability_pct", "data_quality_pct",
     )
     result = []
     day_count = max(1, min(days, 90))
@@ -177,14 +215,21 @@ def daily_summaries_for(readings_by_turbine, days: int):
             grouped[reading["timestamp"][:10]].append(reading)
         for date_key in sorted(grouped)[-day_count:]:
             day_rows = grouped[date_key]
+            minimums = [row.get("wind_speed_min", row.get("wind_speed")) for row in day_rows]
+            maximums = [row.get("wind_speed_max", row.get("wind_speed")) for row in day_rows]
+            directions = [row.get("wind_direction") for row in day_rows if row.get("wind_direction") is not None]
+            direction_sin = sum(math.sin(math.radians(value)) for value in directions)
+            direction_cos = sum(math.cos(math.radians(value)) for value in directions)
             item = {
                 "turbine_id": turbine_id,
                 "date": date_key,
                 "records": len(day_rows),
-                "energy_produced_mwh": round(sum(row.get("energy_produced_mwh", 0) for row in day_rows), 6),
-                "estimated_revenue_usd": round(sum(row.get("estimated_revenue_usd", 0) for row in day_rows), 4),
+                "wind_speed_stddev": round(pooled_wind_speed_stddev(day_rows) or 0.0, 6),
+                "wind_speed_min": round(min(value for value in minimums if value is not None), 6),
+                "wind_speed_max": round(max(value for value in maximums if value is not None), 6),
+                "wind_direction": round(math.degrees(math.atan2(direction_sin, direction_cos)) % 360, 6) if directions else None,
             }
-            for field in fields:
+            for field in average_fields:
                 values = [row[field] for row in day_rows if row.get(field) is not None]
                 item[field] = round(sum(values) / len(values), 6) if values else None
             result.append(item)
@@ -199,19 +244,23 @@ def daily_summaries(days: int):
 def monthly_history_for(readings, turbine_assets):
     """Return compact full-archive monthly metrics for the History workspace."""
     metric_definitions = (
-        ("wind_speed", "Wind speed", "m/s"),
-        ("temperature", "Temperature", "°C"),
-        ("humidity", "Humidity", "%"),
-        ("air_pressure", "Air pressure", "hPa"),
-        ("air_density", "Air density", "kg/m3"),
-        ("availability_pct", "Availability", "%"),
-        ("data_quality_pct", "Data quality", "%"),
+        ("wind_speed", "Average wind speed", "m/s", "mean"),
+        ("wind_speed_min", "Minimum wind speed", "m/s", "min"),
+        ("wind_speed_max", "Maximum wind speed", "m/s", "max"),
+        ("wind_direction", "Wind direction", "°", "circular"),
+        ("temperature", "Temperature", "°C", "mean"),
+        ("humidity", "Humidity", "%", "mean"),
+        ("air_pressure", "Air pressure", "hPa", "mean"),
+        ("air_density", "Air density", "kg/m3", "mean"),
+        ("availability_pct", "Availability", "%", "mean"),
+        ("data_quality_pct", "Data quality", "%", "mean"),
     )
     metric_keys = tuple(item[0] for item in metric_definitions)
-    month_totals = defaultdict(lambda: {key: [0.0, 0] for key in metric_keys})
-    point_totals = defaultdict(lambda: {key: [0.0, 0] for key in metric_keys})
-    day_totals = defaultdict(lambda: {key: [0.0, 0] for key in metric_keys})
-    day_point_totals = defaultdict(lambda: {key: [0.0, 0] for key in metric_keys})
+    metric_modes = {key: mode for key, _, _, mode in metric_definitions}
+    month_totals = defaultdict(lambda: {key: [] for key in metric_keys})
+    point_totals = defaultdict(lambda: {key: [] for key in metric_keys})
+    day_totals = defaultdict(lambda: {key: [] for key in metric_keys})
+    day_point_totals = defaultdict(lambda: {key: [] for key in metric_keys})
     month_records = defaultdict(int)
     point_records = defaultdict(int)
     day_records = defaultdict(int)
@@ -238,22 +287,29 @@ def monthly_history_for(readings, turbine_assets):
             value = reading.get(metric)
             if value is None:
                 continue
-            month_totals[month_key][metric][0] += value
-            month_totals[month_key][metric][1] += 1
-            point_totals[point_key][metric][0] += value
-            point_totals[point_key][metric][1] += 1
-            day_totals[day_key][metric][0] += value
-            day_totals[day_key][metric][1] += 1
-            day_point_totals[day_point_key][metric][0] += value
-            day_point_totals[day_point_key][metric][1] += 1
+            month_totals[month_key][metric].append(value)
+            point_totals[point_key][metric].append(value)
+            day_totals[day_key][metric].append(value)
+            day_point_totals[day_point_key][metric].append(value)
 
     names = {asset["id"]: asset["name"] for asset in turbine_assets}
 
     def averages(totals):
-        return {
-            metric: round(total / count, 4) if count else None
-            for metric, (total, count) in totals.items()
-        }
+        result = {}
+        for metric, values in totals.items():
+            if not values:
+                result[metric] = None
+            elif metric_modes[metric] == "min":
+                result[metric] = round(min(values), 4)
+            elif metric_modes[metric] == "max":
+                result[metric] = round(max(values), 4)
+            elif metric_modes[metric] == "circular":
+                sine = sum(math.sin(math.radians(value)) for value in values)
+                cosine = sum(math.cos(math.radians(value)) for value in values)
+                result[metric] = round(math.degrees(math.atan2(sine, cosine)) % 360, 4)
+            else:
+                result[metric] = round(sum(values) / len(values), 4)
+        return result
 
     months = []
     for month_key in sorted(month_totals):
@@ -308,7 +364,7 @@ def monthly_history_for(readings, turbine_assets):
         ],
         "metrics": [
             {"key": key, "label": label, "unit": unit}
-            for key, label, unit in metric_definitions
+            for key, label, unit, _ in metric_definitions
         ],
         "months": months,
     }
@@ -317,3 +373,9 @@ def monthly_history_for(readings, turbine_assets):
 @lru_cache(maxsize=1)
 def monthly_history():
     return monthly_history_for(ALL_READINGS, TURBINES)
+
+
+def latest_reported_month():
+    """Return the most recent month containing mast observations."""
+    months = monthly_history()["months"]
+    return months[-1] if months else None

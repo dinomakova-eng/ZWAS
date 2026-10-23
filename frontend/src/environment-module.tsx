@@ -24,13 +24,13 @@ type Turbine = {
   source_id?: string;
   status?: string;
   average_wind_speed?: number;
+  wind_speed_stddev?: number;
   latest_wind_speed?: number;
   latest_wind_direction?: number;
   latest_temperature?: number;
   latest_humidity?: number;
   latest_air_pressure?: number;
   latest_air_density?: number;
-  latest_power_output?: number;
   last_reading_at?: string;
 };
 
@@ -48,6 +48,62 @@ type OsmLocation = {
   display_name?: string;
   feature_type?: string;
   source?: string;
+};
+
+type WindWindowStats = {
+  average: number;
+  minimum: number;
+  maximum: number;
+  start_date: string;
+  end_date: string;
+  days: number;
+  samples?: number;
+};
+
+type WindDailyStats = {
+  date: string;
+  average: number;
+  minimum: number;
+  maximum: number;
+  samples?: number;
+};
+
+type EnvironmentWindSummary = {
+  point: { latitude: number; longitude: number; region?: string; district?: string };
+  closest_wind_point: {
+    id: number;
+    name: string;
+    latitude: number;
+    longitude: number;
+    distance_km: number;
+    region?: string;
+    district?: string;
+  };
+  observed: {
+    live: WindWindowStats | null;
+    mast: WindWindowStats | null;
+    live_daily: WindDailyStats[];
+    mast_daily: WindDailyStats[];
+  };
+  forecast: {
+    live: WindWindowStats | null;
+    mast: WindWindowStats | null;
+    blended: WindWindowStats | null;
+    daily: Array<{ date: string; wind_speed: number; lower: number; upper: number }>;
+  };
+  method: {
+    label: string;
+    live_weight_pct: number;
+    mast_weight_pct: number;
+    mast_model?: string;
+    mast_model_mae?: number | null;
+    live_available: boolean;
+  };
+};
+
+type PopupGridContext = {
+  nearestSubstation: { name: string; distance: number } | null;
+  nearestTransformer: { name: string; distance: number } | null;
 };
 
 type Selection = {
@@ -122,13 +178,55 @@ const windColor = (windSpeed: number) => {
   return '#eb5757';
 };
 
-const valueLabel = (value: number | undefined, decimals: number, unit: string) =>
-  Number.isFinite(Number(value)) ? `${Number(value).toFixed(decimals)} ${unit}` : 'Not available';
+const compactWindValue = (value: number | undefined) => Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '—';
+const compactDayDate = (value: string) => new Intl.DateTimeFormat('en-ZW', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'UTC' }).format(new Date(`${value}T00:00:00Z`));
 
-const timestampLabel = (value?: string) => {
-  if (!value) return 'Not available';
-  const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString('en-ZW', { dateStyle: 'medium', timeStyle: 'short' });
+const observedDayCell = (stats?: WindDailyStats) => stats
+  ? `<span class="environment-observed-cell"><small>${compactDayDate(stats.date)}</small><strong>${compactWindValue(stats.average)} avg</strong><em>${compactWindValue(stats.minimum)}–${compactWindValue(stats.maximum)}</em></span>`
+  : '<span class="environment-observed-cell unavailable"><small>No source day</small><strong>—</strong><em>—</em></span>';
+
+const observedDailyRows = (summary: EnvironmentWindSummary) => Array.from({ length: 7 }, (_, index) => `
+  <div class="environment-observed-row">
+    <b>${index + 1}</b>
+    ${observedDayCell(summary.observed.live_daily[index])}
+    ${observedDayCell(summary.observed.mast_daily[index])}
+  </div>`).join('');
+
+const forecastDailyRows = (summary: EnvironmentWindSummary) => summary.forecast.daily.slice(0, 7).map(row => `
+  <div class="environment-forecast-row">
+    <b>${compactDayDate(row.date)}</b>
+    <span>${compactWindValue(row.wind_speed)}</span>
+    <span>${compactWindValue(row.lower)}</span>
+    <span>${compactWindValue(row.upper)}</span>
+  </div>`).join('');
+
+const windWindowLabel = (stats: WindWindowStats | null) => stats
+  ? `${stats.average.toFixed(2)} avg · ${stats.minimum.toFixed(2)}–${stats.maximum.toFixed(2)} m/s`
+  : 'Not available';
+
+const windAnalysisPopup = (
+  title: string,
+  point: L.LatLng,
+  summary: EnvironmentWindSummary | null,
+  gridContext: PopupGridContext,
+  pending = true,
+) => {
+  const nearest = summary?.closest_wind_point;
+  const method = summary?.method;
+  const methodLabel = method?.live_available
+    ? `${method.live_weight_pct}% live model · ${method.mast_weight_pct}% mast calibration`
+    : 'Mast forecast fallback · live model unavailable';
+  return `<div class="environment-wind-popup">
+    <header><small>DAILY WIND DETAIL</small><strong>${safeText(title)}</strong><span>${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}</span></header>
+    <div class="environment-point-context">
+      <span><small>ZESA region</small><b>${safeText(summary?.point.region || 'Locating…')}</b></span>
+      <span><small>ZESA district</small><b>${safeText(summary?.point.district || 'Locating…')}</b></span>
+      <span><small>Closest wind point</small><b>${safeText(nearest?.name || 'Locating…')}</b>${nearest ? `<em>${nearest.distance_km.toFixed(1)} km</em>` : ''}</span>
+      <span><small>Nearest substation</small><b>${safeText(gridContext.nearestSubstation?.name || 'Not available')}</b>${gridContext.nearestSubstation ? `<em>${distanceLabel(gridContext.nearestSubstation.distance)}</em>` : ''}</span>
+      <span><small>Nearest transformer</small><b>${safeText(gridContext.nearestTransformer?.name || 'Not available')}</b>${gridContext.nearestTransformer ? `<em>${distanceLabel(gridContext.nearestTransformer.distance)}</em>` : ''}</span>
+    </div>
+    ${summary ? `<div class="environment-wind-daily-layout"><section><div class="environment-wind-section-title"><b>Previous 7 source days</b><span>daily avg · min–max m/s</span></div><div class="environment-observed-table"><div class="environment-observed-row heading"><b>Day</b><span>Live 10 m</span><span>ZESA mast</span></div>${observedDailyRows(summary)}</div></section><section><div class="environment-wind-section-title"><b>Next 7 days</b><span>best estimate · m/s</span></div><div class="environment-forecast-table"><div class="environment-forecast-row heading"><b>Date</b><span>Avg</span><span>Min</span><span>Max</span></div>${forecastDailyRows(summary)}</div></section></div><footer>${safeText(methodLabel)}</footer>` : pending ? '<div class="environment-wind-loading"><i></i><span>Preparing observed and forecast wind…</span></div>' : '<div class="environment-wind-loading unavailable"><span>Seven-day wind analysis is temporarily unavailable.</span></div>'}
+  </div>`;
 };
 
 const routeDistance = (point: L.LatLng, feature: any) => {
@@ -161,6 +259,7 @@ const routeDistance = (point: L.LatLng, feature: any) => {
 
 export function EnvironmentModule({ token }: EnvironmentModuleProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
+  const analysisPopupRef = useRef<HTMLDivElement>(null);
   const leafletMapRef = useRef<L.Map | null>(null);
   const windLayerRef = useRef<L.TileLayer.WMS | null>(null);
   const mapLayersRef = useRef<Partial<Record<LayerKey, L.Layer>>>({});
@@ -184,6 +283,30 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
     let disposed = false;
     let inspectionSequence = 0;
     let map: L.Map | null = null;
+    let analysisPoint: L.LatLng | null = null;
+    let inspectPoint: (point: L.LatLng) => void = () => undefined;
+
+    const positionAnalysisPopup = () => {
+      const popup = analysisPopupRef.current;
+      if (!analysisPoint || !popup || popup.hidden) return;
+      popup.style.left = '50%';
+      popup.style.top = '50%';
+    };
+
+    const closeAnalysisPopup = () => {
+      analysisPoint = null;
+      if (analysisPopupRef.current) analysisPopupRef.current.hidden = true;
+    };
+
+    const showAnalysisPopup = (point: L.LatLng, content: string) => {
+      const popup = analysisPopupRef.current;
+      if (!popup) return;
+      analysisPoint = point;
+      popup.innerHTML = `<button type="button" class="environment-analysis-close" aria-label="Close wind analysis">×</button>${content}`;
+      popup.hidden = false;
+      popup.querySelector<HTMLButtonElement>('.environment-analysis-close')?.addEventListener('click', closeAnalysisPopup, { once: true });
+      requestAnimationFrame(positionAnalysisPopup);
+    };
 
     const json = async (url: string, options?: RequestInit) => {
       const response = await fetch(url, { ...options, signal: controller.signal });
@@ -219,10 +342,10 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
         if (disposed || !mapElementRef.current) return;
 
         const liveStations = liveResponse?.stations || [];
-        const liveById = new Map(liveStations.map(station => [station.id, station]));
 
         const gridFeatures: any[] = grid.features || [];
         const stations = gridFeatures.filter(feature => feature.properties?.asset_type === 'station');
+        const substations = stations.filter(feature => String(feature.properties?.station_type || '').toUpperCase() === 'SUBSTATION');
         const transformers = gridFeatures.filter(feature => feature.properties?.asset_type === 'transformer');
         const overheadRoutes = gridFeatures.filter(feature => feature.properties?.asset_type === 'overhead');
         const cableRoutes = gridFeatures.filter(feature => feature.properties?.asset_type === 'cable');
@@ -242,6 +365,8 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
           zoomSnap: .25,
           preferCanvas: true,
         });
+        map.on('move zoom resize', positionAnalysisPopup);
+        window.addEventListener('resize', positionAnalysisPopup);
         leafletMapRef.current = map;
         map.createPane('windResource');
         map.getPane('windResource')!.style.zIndex = '240';
@@ -357,28 +482,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
             bubblingMouseEvents: false,
           });
           marker.bindTooltip(`Live · ${station.name} · ${windSpeed.toFixed(2)} m/s`, { direction: 'top' });
-          marker.bindPopup(`<div class="environment-popup live"><small>LIVE WIND CONDITIONS · 10 M</small><strong>${safeText(station.name)}</strong><span>Wind speed <b>${windSpeed.toFixed(2)} m/s</b></span><span>Direction <b>${valueLabel(station.latest_wind_direction, 0, '°')}</b></span><span>Temperature <b>${valueLabel(station.latest_temperature, 1, '°C')}</b></span><span>Updated <b>${safeText(timestampLabel(station.last_reading_at))}</b></span></div>`);
-          marker.on('click', () => {
-            const mast = turbines.find(item => item.id === station.id);
-            setSelection({
-              label: 'LIVE WIND CONDITIONS',
-              title: station.name,
-              note: `${liveResponse?.metadata?.provider || 'Open-Meteo'} hourly conditions at 10 m${liveResponse?.metadata?.stale ? ' · cached data' : ''}.`,
-              rows: [
-                ['Live wind speed', valueLabel(station.latest_wind_speed, 2, 'm/s')],
-                ['Live direction', valueLabel(station.latest_wind_direction, 0, '°')],
-                ['Live temperature', valueLabel(station.latest_temperature, 1, '°C')],
-                ['Live humidity', valueLabel(station.latest_humidity, 0, '%')],
-                ['Live air pressure', valueLabel(station.latest_air_pressure, 1, 'hPa')],
-                ['Live air density', valueLabel(station.latest_air_density, 4, 'kg/m³')],
-                ['Estimated generation', valueLabel(Number(station.latest_power_output || 0) / 1000, 2, 'MW')],
-                ['Observation time', timestampLabel(station.last_reading_at)],
-                ['ZESA mast latest', mast ? valueLabel(mast.latest_wind_speed, 2, 'm/s') : 'Not available'],
-              ],
-              latitude: station.lat,
-              longitude: station.lon,
-            });
-          });
+          marker.on('click', () => inspectPoint(marker.getLatLng()));
           return marker;
         })).addTo(map);
 
@@ -390,31 +494,9 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
             iconAnchor: [17, 45],
           });
           const wind = Number(turbine.latest_wind_speed || 0).toFixed(2);
-          const averageWind = Number(turbine.average_wind_speed || 0).toFixed(2);
-          const generation = (Number(turbine.latest_power_output || 0) / 1000).toFixed(2);
           const marker = L.marker([turbine.lat, turbine.lon], { icon, pane: 'windSites', title: turbine.name });
           marker.bindTooltip(`ZESA mast · ${turbine.name} · ${wind} m/s`, { direction: 'top' });
-          marker.bindPopup(`<div class="environment-popup turbine"><small>ZESA WIND MAST OBSERVATION</small><strong>${safeText(turbine.name)}</strong><span>Latest measured wind <b>${wind} m/s</b></span><span>24-hour average <b>${averageWind} m/s</b></span><span>Estimated generation <b>${generation} MW</b></span><span>Observed <b>${safeText(timestampLabel(turbine.last_reading_at))}</b></span><span>${safeText(turbine.region)} · ${safeText(turbine.district)}</span></div>`);
-          marker.on('click', () => setSelection({
-            label: 'ZESA WIND MAST OBSERVATION',
-            title: turbine.name,
-            note: `${turbine.region || 'ZETDC'} · ${turbine.district || 'Zimbabwe'} · measured logger telemetry.`,
-            rows: [
-              ['Latest mast wind', `${wind} m/s`],
-              ['24-hour mast average', `${averageWind} m/s`],
-              ['Mast direction', valueLabel(turbine.latest_wind_direction, 0, '°')],
-              ['Mast temperature', valueLabel(turbine.latest_temperature, 1, '°C')],
-              ['Mast humidity', valueLabel(turbine.latest_humidity, 0, '%')],
-              ['Mast air pressure', valueLabel(turbine.latest_air_pressure, 1, 'hPa')],
-              ['Estimated generation', `${generation} MW`],
-              ['Observation time', timestampLabel(turbine.last_reading_at)],
-              ['Live wind at site', liveById.has(turbine.id) ? valueLabel(liveById.get(turbine.id)?.latest_wind_speed, 2, 'm/s') : 'Not available'],
-              ['Logger', turbine.source_id || 'Not listed'],
-              ['Status', turbine.status || 'Not listed'],
-            ],
-            latitude: turbine.lat,
-            longitude: turbine.lon,
-          }));
+          marker.on('click', () => inspectPoint(marker.getLatLng()));
           return marker;
         })).addTo(map);
 
@@ -450,12 +532,10 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
           return result;
         };
 
-        map.on('click', async event => {
+        inspectPoint = async point => {
           const inspectionId = ++inspectionSequence;
-          const point = event.latlng;
           const nearestTurbine = nearest(turbines, item => item.lat, item => item.lon, point);
-          const nearestLiveStation = nearest(liveStations, item => item.lat, item => item.lon, point);
-          const nearestStation = nearest(stations, item => Number((item as any).properties.measure_lat), item => Number((item as any).properties.measure_lon), point);
+          const nearestSubstation = nearest(substations.length ? substations : stations, item => Number((item as any).properties.measure_lat), item => Number((item as any).properties.measure_lon), point);
           const nearestTransformer = nearest(transformers, item => Number((item as any).properties.measure_lat), item => Number((item as any).properties.measure_lon), point);
           const nearestOverhead = nearestRoute(overheadRoutes, point);
           const nearestCable = nearestRoute(cableRoutes, point);
@@ -466,9 +546,15 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
             pane: 'windSites', radius: 9, color: '#ffffff', weight: 3, fillColor: '#00d5ff', fillOpacity: .92,
           }).addTo(map!).bindTooltip('Selected resource point', { permanent: false, direction: 'top' });
 
+          const popupGridContext: PopupGridContext = {
+            nearestSubstation: nearestSubstation ? { name: nearestSubstation.item.properties.label, distance: nearestSubstation.distance } : null,
+            nearestTransformer: nearestTransformer ? { name: nearestTransformer.item.properties.label, distance: nearestTransformer.distance } : null,
+          };
+          showAnalysisPopup(point, windAnalysisPopup(coordinateKey, point, null, popupGridContext));
+
           const nearby: NearbyAsset[] = [
             nearestTurbine && { kind: 'Wind point', name: nearestTurbine.item.name, distance: nearestTurbine.distance, latitude: nearestTurbine.item.lat, longitude: nearestTurbine.item.lon },
-            nearestStation && { kind: 'Station', name: nearestStation.item.properties.label, distance: nearestStation.distance, latitude: Number(nearestStation.item.properties.measure_lat), longitude: Number(nearestStation.item.properties.measure_lon) },
+            nearestSubstation && { kind: 'Substation', name: nearestSubstation.item.properties.label, distance: nearestSubstation.distance, latitude: Number(nearestSubstation.item.properties.measure_lat), longitude: Number(nearestSubstation.item.properties.measure_lon) },
             nearestTransformer && { kind: 'Transformer', name: nearestTransformer.item.properties.label, distance: nearestTransformer.distance, latitude: Number(nearestTransformer.item.properties.measure_lat), longitude: Number(nearestTransformer.item.properties.measure_lon) },
             nearestOverhead && { kind: 'Overhead line', name: nearestOverhead.item.properties.label || 'Overhead route', distance: nearestOverhead.distance, latitude: nearestOverhead.latitude, longitude: nearestOverhead.longitude },
             nearestCable && { kind: 'Underground cable', name: nearestCable.item.properties.label || 'Cable route', distance: nearestCable.distance, latitude: nearestCable.latitude, longitude: nearestCable.longitude },
@@ -477,43 +563,58 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
           const infrastructureRows: Array<[string, string]> = [
             ['Coordinates', `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`],
             ['Nearest wind point', nearestTurbine ? `${nearestTurbine.item.name} · ${distanceLabel(nearestTurbine.distance)}` : 'Not available'],
-            ['Nearest mast wind', nearestTurbine ? valueLabel(nearestTurbine.item.latest_wind_speed, 2, 'm/s') : 'Not available'],
-            ['Live wind at nearest site', nearestLiveStation ? `${nearestLiveStation.item.name} · ${valueLabel(nearestLiveStation.item.latest_wind_speed, 2, 'm/s')} · ${distanceLabel(nearestLiveStation.distance)}` : 'Not available'],
-            ['Nearest station', nearestStation ? `${nearestStation.item.properties.label} · ${distanceLabel(nearestStation.distance)}` : 'Not available'],
+            ['Nearest substation', nearestSubstation ? `${nearestSubstation.item.properties.label} · ${distanceLabel(nearestSubstation.distance)}` : 'Not available'],
             ['Nearest transformer', nearestTransformer ? `${nearestTransformer.item.properties.label} · ${distanceLabel(nearestTransformer.distance)}` : 'Not available'],
             ['Nearest overhead line', nearestOverhead ? `${nearestOverhead.item.properties.label || 'Overhead route'} · ${distanceLabel(nearestOverhead.distance)}` : 'Not available'],
             ['Nearest cable', nearestCable ? `${nearestCable.item.properties.label || 'Cable route'} · ${distanceLabel(nearestCable.distance)}` : 'Not available'],
           ];
           setSelection({
-            label: 'IRENA RESOURCE QUERY',
+            label: 'POINT WIND ANALYSIS',
             title: coordinateKey,
-            note: 'Retrieving the long-term annual mean wind resource at 100 m…',
+            note: 'Retrieving the seven-day live, mast and forecast comparison…',
             rows: infrastructureRows,
             latitude: point.lat,
             longitude: point.lng,
             nearby,
           });
-          const [resourceResult, locationResult] = await Promise.allSettled([
+          const [resourceResult, locationResult, windResult] = await Promise.allSettled([
             json(`/api/environment/wind-resource?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`, { headers: { Authorization: `Bearer ${token}` } }),
             json(`/api/environment/location?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`, { headers: { Authorization: `Bearer ${token}` } }),
+            json(`/api/environment/wind-summary?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`, { headers: { Authorization: `Bearer ${token}` } }),
           ]);
           if (disposed || inspectionId !== inspectionSequence) return;
 
           const resource = resourceResult.status === 'fulfilled' ? resourceResult.value : null;
           const location = locationResult.status === 'fulfilled' ? locationResult.value as OsmLocation : null;
+          const windSummary = windResult.status === 'fulfilled' ? windResult.value as EnvironmentWindSummary : null;
           const windSpeed = Number(resource?.wind_speed_ms);
+          const locationTitle = location?.name || coordinateKey;
+          if (analysisPoint?.equals(point)) {
+            showAnalysisPopup(point, windAnalysisPopup(locationTitle, point, windSummary, popupGridContext, false));
+          }
           const locationRows: Array<[string, string]> = location ? [
             ['OpenStreetMap location', location.name || 'Unnamed mapped feature'],
             ['Detailed OSM address', location.display_name || location.name || 'Not available'],
           ] : [['OpenStreetMap location', 'Not available']];
-          const note = resource
-            ? `IRENA Global Atlas · Vortex long-term annual average at 100 m.${location ? ' Location identified from OpenStreetMap.' : ' The OSM place name could not be retrieved.'}`
-            : `The IRENA point value could not be retrieved.${location ? ' Location identified from OpenStreetMap.' : ' The OSM place name is also unavailable.'}`;
+          const windRows: Array<[string, string]> = windSummary ? [
+            ['Live · previous 7 days', windWindowLabel(windSummary.observed.live)],
+            ['ZESA mast · latest 7 days', windWindowLabel(windSummary.observed.mast)],
+            ['Best estimate · next 7 days', windWindowLabel(windSummary.forecast.blended)],
+            ['Forecast blend', windSummary.method.live_available ? `${windSummary.method.live_weight_pct}% live model · ${windSummary.method.mast_weight_pct}% mast calibration` : 'Mast model fallback'],
+          ] : [['Seven-day wind analysis', 'Temporarily unavailable']];
+          const note = windSummary
+            ? `Seven-day wind context for this location, calibrated with ${windSummary.closest_wind_point.name}.${resource ? ' IRENA annual screening is included below.' : ''}`
+            : `The seven-day wind comparison could not be retrieved.${resource ? ' IRENA annual screening remains available.' : ''}`;
           setSelection({
-            label: 'IRENA RESOURCE QUERY',
-            title: location?.name || coordinateKey,
+            label: 'POINT WIND ANALYSIS',
+            title: locationTitle,
             note,
             rows: [
+              ...windRows,
+              ...(windSummary ? [
+                ['ZESA region', windSummary.point.region || 'Not available'],
+                ['ZESA district', windSummary.point.district || 'Not available'],
+              ] as Array<[string, string]> : []),
               ...(Number.isFinite(windSpeed) ? [
                 ['Wind resource', `${windSpeed.toFixed(2)} m/s`],
                 ['Screening band', resourceBand(windSpeed)],
@@ -525,14 +626,16 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
             longitude: point.lng,
             nearby,
           });
-        });
+        };
+
+        map.on('click', event => inspectPoint(event.latlng));
 
         setStatus(liveStations.length ? 'Annual, live, mast and grid layers loaded' : 'Annual, mast and grid layers loaded · live wind unavailable');
         requestAnimationFrame(() => map?.invalidateSize());
       } catch (error) {
         if (disposed || controller.signal.aborted) return;
-        setStatus('Environment layers could not be loaded');
-        setSelection({ label: 'MAP STATUS', title: 'Layer loading failed', note: error instanceof Error ? error.message : 'The environment map is unavailable.', rows: [] });
+        setStatus('Wind Map layers could not be loaded');
+        setSelection({ label: 'MAP STATUS', title: 'Layer loading failed', note: error instanceof Error ? error.message : 'The Wind Map is unavailable.', rows: [] });
       }
     };
 
@@ -540,6 +643,8 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
     return () => {
       disposed = true;
       controller.abort();
+      window.removeEventListener('resize', positionAnalysisPopup);
+      closeAnalysisPopup();
       windLayerRef.current = null;
       mapLayersRef.current = {};
       queryMarkerRef.current = null;
@@ -591,11 +696,11 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
 
   return <main className="content environment-host">
     <div className="environment-heading">
-      <div><p className="eyebrow">ENVIRONMENT &amp; GRID INTELLIGENCE</p><h1>Zimbabwe Wind Resource Map</h1><p>Live wind conditions and ZESA mast observations combined with annual resource and grid infrastructure.</p></div>
+      <div><p className="eyebrow">WIND RESOURCE &amp; GRID INTELLIGENCE</p><h1>Zimbabwe Wind Map</h1><p>Live wind conditions and ZESA mast observations combined with annual resource and grid infrastructure.</p></div>
       <a href="https://globalatlas.irena.org/" target="_blank" rel="noreferrer">Open IRENA Global Atlas ↗</a>
     </div>
 
-    <section className="environment-kpis" aria-label="Environment map layer totals">
+    <section className="environment-kpis" aria-label="Wind Map layer totals">
       <article><small>ZESA mast points</small><strong>{summary.mastPoints.toLocaleString()}</strong><span>Latest logger observations</span></article>
       <article><small>Live wind points</small><strong>{summary.livePoints.toLocaleString()}</strong><span>Current hourly conditions</span></article>
       <article><small>Substations &amp; stations</small><strong>{summary.stations.toLocaleString()}</strong><span>ZESA spatial register</span></article>
@@ -615,7 +720,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
       </div>
 
       <aside className="environment-inspector">
-        <section className="environment-filters" aria-label="Environment map filters">
+        <section className="environment-filters" aria-label="Wind Map filters">
           <div className="environment-filter-heading"><div><p className="eyebrow">MAP FILTERS</p><h2>Visible layers</h2></div><div><button type="button" onClick={() => setAllLayers(true)}>All</button><button type="button" onClick={() => setAllLayers(false)}>None</button></div></div>
           <label className="environment-opacity"><span>Annual wind opacity</span><input type="range" min="20" max="90" value={opacity} onChange={event => changeOpacity(Number(event.target.value))}/><b>{opacity}%</b></label>
           <div className="environment-layer-list">{layerLabels.map(item => <label key={item.key}><input type="checkbox" checked={layerVisibility[item.key]} onChange={event => setLayer(item.key, event.target.checked)}/><i className={`symbol ${item.className}`}/><span>{item.label}</span></label>)}</div>
@@ -653,6 +758,8 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
         </div>
       </aside>
     </section>
+
+    <div ref={analysisPopupRef} className="environment-analysis-overlay" role="dialog" aria-live="polite" aria-label="Selected point wind analysis" hidden/>
 
     <p className="environment-source-note"><b>Wind sources:</b> live 10 m hourly conditions from Open-Meteo, measured observations from ZESA wind masts, and the Vortex annual average at 100 m from the IRENA Global Atlas. Live/modelled and mast heights differ, so compare them as context rather than like-for-like measurements.</p>
   </main>;

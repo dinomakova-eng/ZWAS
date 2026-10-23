@@ -31,28 +31,26 @@ type Reading = {
   date: string;
   records: number;
   wind_speed?: number;
+  wind_speed_min?: number;
+  wind_speed_max?: number;
+  wind_direction?: number;
   temperature?: number;
   humidity?: number;
   air_pressure?: number;
   air_density?: number;
-  energy_produced_mwh?: number;
-  estimated_revenue_usd?: number;
   availability_pct?: number;
-  capacity_factor_pct?: number;
   data_quality_pct?: number;
-  power_output?: number;
 };
 
 type PointMetric = Asset & {
   wind: number;
-  power: number;
+  minWind: number;
+  maxWind: number;
+  direction: number;
   temperature: number;
   humidity: number;
   pressure: number;
   density: number;
-  energy: number;
-  revenue: number;
-  capacity: number;
   quality: number;
   availability: number;
   records: number;
@@ -65,37 +63,41 @@ const weightedAverage = (rows: Reading[], field: keyof Reading) => {
   const weight = sum(available.map(row => row.records));
   return weight ? sum(available.map(row => safe(row[field]) * row.records)) / weight : 0;
 };
+const weightedDirection = (rows: Reading[]) => {
+  const available = rows.filter(row => row.wind_direction != null);
+  const sine = sum(available.map(row => Math.sin(Number(row.wind_direction) * Math.PI / 180) * row.records));
+  const cosine = sum(available.map(row => Math.cos(Number(row.wind_direction) * Math.PI / 180) * row.records));
+  return available.length ? (Math.atan2(sine, cosine) * 180 / Math.PI + 360) % 360 : 0;
+};
+const directionDifference = (left: number, right: number) => ((left - right + 540) % 360) - 180;
 
 const templates = [
-  ['Measured Wind', [['wind', 'Wind resource summary'], ['wind', 'Site wind ranking'], ['power', 'Wind-to-power assessment']]],
+  ['Measured Wind', [['wind', 'Wind resource summary'], ['wind', 'Site wind ranking'], ['minWind', 'Minimum wind conditions'], ['maxWind', 'Maximum wind conditions'], ['direction', 'Wind direction summary']]],
   ['Environment', [['temperature', 'Temperature conditions'], ['humidity', 'Humidity conditions'], ['pressure', 'Air-pressure conditions'], ['density', 'Air-density conditions']]],
-  ['Derived Measures', [['energy', 'Estimated energy'], ['revenue', 'Estimated revenue'], ['capacity', 'Assessment capacity factor']]],
   ['Data Governance', [['quality', 'Data quality'], ['availability', 'Logger availability'], ['records', 'Source-record coverage']]],
 ] as const;
 
 const labels: Record<string, [string, string]> = {
-  wind: ['Average wind speed', 'm/s'], power: ['Average estimated power', 'kW'], temperature: ['Average temperature', '°C'],
-  humidity: ['Average humidity', '%'], pressure: ['Average air pressure', 'hPa'], density: ['Average air density', 'kg/m³'], energy: ['Estimated energy', 'MWh'],
-  revenue: ['Estimated revenue', 'USD'], capacity: ['Assessment capacity factor', '%'], quality: ['Data quality', '%'],
+  wind: ['Average wind speed', 'm/s'], minWind: ['Minimum wind speed', 'm/s'], maxWind: ['Maximum wind speed', 'm/s'], direction: ['Average wind direction', '°'], temperature: ['Average temperature', '°C'],
+  humidity: ['Average humidity', '%'], pressure: ['Average air pressure', 'hPa'], density: ['Average air density', 'kg/m³'], quality: ['Data quality', '%'],
   availability: ['Logger availability', '%'], records: ['Source records', 'records'],
 };
 
 const interpretations: Record<string, string> = {
   wind: 'Higher wind-speed sites offer the strongest measured resource in the selected period; confirm long-term suitability with mast coverage and site studies.',
-  power: 'Estimated power applies the configured wind-energy formula and is an assessment measure, not turbine SCADA production.',
-  temperature: 'Temperature affects air density and therefore the energy available in the wind stream.',
+  minWind: 'Minimum wind speed shows the lowest measured condition in the selected source window.',
+  maxWind: 'Maximum wind speed shows the highest measured condition in the selected source window.',
+  direction: 'Wind direction is measured clockwise from north and helps describe the prevailing site flow.',
+  temperature: 'Temperature provides environmental context for the measured wind conditions.',
   humidity: 'Humidity is environmental context used with temperature and pressure when calculating moist-air density.',
-  pressure: 'Higher pressure generally increases air density and the theoretical energy captured at the same wind speed.',
-  density: 'Air density combines pressure, temperature, and humidity and directly influences the wind-power estimate.',
-  energy: 'Estimated energy accumulates formula-derived power over the selected source window.',
-  revenue: 'Estimated revenue applies the configured tariff to derived energy and should be treated as a planning estimate.',
-  capacity: 'Assessment capacity factor compares derived output with the configured assessment capacity.',
+  pressure: 'Air pressure provides environmental context for comparing wind observations across sites.',
+  density: 'Air density combines pressure, temperature, and humidity into a consistent environmental measure.',
   quality: 'Data quality represents completeness and validity of logger records in the active reporting scope.',
   availability: 'Availability shows how consistently each logger supplied valid measurements in the selected window.',
   records: 'Record coverage identifies which sites and time windows contribute the strongest evidence base.',
 };
 
-const metricDigits = (metric: string) => metric === 'density' ? 4 : metric === 'records' ? 0 : 2;
+const metricDigits = (metric: string) => metric === 'density' ? 4 : metric === 'records' ? 0 : metric === 'direction' ? 1 : 2;
 const fileSlug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const download = (contents: BlobPart, type: string, name: string) => {
   const link = document.createElement('a');
@@ -139,25 +141,22 @@ const enhance = async () => {
       const diff = (field: keyof Reading) => weightedAverage(rowsForSource(point, liveSourceRows), field) - weightedAverage(rowsForSource(point, sourceRows), field);
       if (state.source === 'difference') return {
         ...point,
-        wind: diff('wind_speed'), power: diff('power_output'), temperature: diff('temperature'), humidity: diff('humidity'),
+        wind: diff('wind_speed'), minWind: diff('wind_speed_min'), maxWind: diff('wind_speed_max'), direction: directionDifference(weightedDirection(rowsForSource(point, liveSourceRows)), weightedDirection(rowsForSource(point, sourceRows))), temperature: diff('temperature'), humidity: diff('humidity'),
         pressure: diff('air_pressure'), density: diff('air_density'),
-        energy: sum(rowsForSource(point, liveSourceRows).map(row => safe(row.energy_produced_mwh))) - sum(rowsForSource(point, sourceRows).map(row => safe(row.energy_produced_mwh))),
-        revenue: sum(rowsForSource(point, liveSourceRows).map(row => safe(row.estimated_revenue_usd))) - sum(rowsForSource(point, sourceRows).map(row => safe(row.estimated_revenue_usd))),
-        capacity: diff('capacity_factor_pct'), quality: diff('data_quality_pct'), availability: diff('availability_pct'),
+        quality: diff('data_quality_pct'), availability: diff('availability_pct'),
         records: sum(rowsForSource(point, liveSourceRows).map(row => row.records)) - sum(rowsForSource(point, sourceRows).map(row => row.records)),
       };
       return {
         ...point,
-        wind: weightedAverage(rows, 'wind_speed'), power: weightedAverage(rows, 'power_output'), temperature: weightedAverage(rows, 'temperature'),
+        wind: weightedAverage(rows, 'wind_speed'), minWind: rows.length ? Math.min(...rows.map(row => safe(row.wind_speed_min ?? row.wind_speed))) : 0, maxWind: rows.length ? Math.max(...rows.map(row => safe(row.wind_speed_max ?? row.wind_speed))) : 0, direction: weightedDirection(rows), temperature: weightedAverage(rows, 'temperature'),
         humidity: weightedAverage(rows, 'humidity'), pressure: weightedAverage(rows, 'air_pressure'), density: weightedAverage(rows, 'air_density'),
-        energy: sum(rows.map(row => safe(row.energy_produced_mwh))), revenue: sum(rows.map(row => safe(row.estimated_revenue_usd))),
-        capacity: weightedAverage(rows, 'capacity_factor_pct'), quality: weightedAverage(rows, 'data_quality_pct'),
+        quality: weightedAverage(rows, 'data_quality_pct'),
         availability: weightedAverage(rows, 'availability_pct'), records: sum(rows.map(row => row.records)),
       };
     });
     const metricValue = (row: PointMetric) => safe(row[state.metric as keyof PointMetric]);
     const unit = () => labels[state.metric]?.[1] || '';
-    const formatted = (value: number) => state.metric === 'revenue' ? `$${fmt(value)}` : `${fmt(value, metricDigits(state.metric))} ${unit()}`.trim();
+    const formatted = (value: number) => `${fmt(value, metricDigits(state.metric))} ${unit()}`.trim();
     const scopeLabel = () => state.point === 'All wind points'
       ? `${state.province} · ${selectedPoints().length} wind point${selectedPoints().length === 1 ? '' : 's'}`
       : points.find(point => String(point.id) === state.point)?.name || 'Selected wind point';
@@ -233,8 +232,8 @@ const enhance = async () => {
         ['Scope', scopeLabel()], ['Window', `Latest ${state.days} source day${state.days === 1 ? '' : 's'} per point`],
         ['Selected metric', `${labels[state.metric]?.[0]} (${unit()})`],
       ];
-      const columns = ['Wind point', 'Province', 'ZETDC region', 'District', 'Latitude', 'Longitude', 'Folder', 'Logger', labels[state.metric]?.[0], 'Unit', 'Average wind speed (m/s)', 'Average power (kW)', 'Estimated energy (MWh)', 'Temperature (°C)', 'Humidity (%)', 'Air pressure (hPa)', 'Air density (kg/m3)', 'Availability (%)', 'Data quality (%)', 'Records'];
-      const data = rows.map(row => [row.name, row.province, row.region, row.district, row.lat, row.lon, row.source_folder, row.source_id, metricValue(row), unit(), row.wind, row.power, row.energy, row.temperature, row.humidity, row.pressure, row.density, row.availability, row.quality, row.records]);
+      const columns = ['Wind point', 'Province', 'ZETDC region', 'District', 'Latitude', 'Longitude', 'Folder', 'Logger', labels[state.metric]?.[0], 'Unit', 'Average wind speed (m/s)', 'Minimum wind speed (m/s)', 'Maximum wind speed (m/s)', 'Wind direction (degrees)', 'Temperature (°C)', 'Humidity (%)', 'Air pressure (hPa)', 'Air density (kg/m3)', 'Availability (%)', 'Data quality (%)', 'Records'];
+      const data = rows.map(row => [row.name, row.province, row.region, row.district, row.lat, row.lon, row.source_folder, row.source_id, metricValue(row), unit(), row.wind, row.minWind, row.maxWind, row.direction, row.temperature, row.humidity, row.pressure, row.density, row.availability, row.quality, row.records]);
       const csv = '\ufeff' + [...metadata.map(row => row.map(csvCell).join(',')), '', columns.map(csvCell).join(','), ...data.map(row => row.map(csvCell).join(','))].join('\r\n');
       download(csv, 'text/csv;charset=utf-8', `${fileSlug(state.template)}-${new Date().toISOString().slice(0, 10)}.csv`);
     };
@@ -326,14 +325,14 @@ const enhance = async () => {
       host!.classList.remove('loading');
       host!.innerHTML = `<section class="bi-workspace ${state.dark ? 'bi-dark' : ''}">
         <aside class="bi-report-nav"><div class="bi-nav-title"><div><p class="eyebrow">MEASURED DATA</p><h1>Analysis hub</h1></div></div><button class="bi-new-report" data-action="back">← Reports</button><div class="bi-report-groups">${templates.map(([group, reports]) => `<section><p>${group}</p>${reports.map(([metric, name]) => `<button class="${state.template === name ? 'active' : ''}" data-template="${name}" data-metric="${metric}">${name}</button>`).join('')}</section>`).join('')}</div><footer><span class="bi-live-dot"></span> Eight folders connected<br><small>${readings.length.toLocaleString()} site-days · ${sum(readings.map(row => row.records)).toLocaleString()} records</small></footer></aside>
-        <main class="bi-main"><header class="bi-topbar"><div><p class="eyebrow">WIND RESOURCE INTELLIGENCE</p><h1>${html(state.template)}</h1><p>Power BI-style, filter-aware fleet reporting from measured and explicitly derived assessment data.</p></div><div class="bi-top-actions"><button data-action="theme">${state.dark ? '☀ Light' : '◐ Dark'}</button><button data-action="save">Save</button><div class="bi-export-control"><label><span>Export format</span><select data-export-format><option value="pdf" ${state.exportFormat === 'pdf' ? 'selected' : ''}>PDF report</option><option value="csv" ${state.exportFormat === 'csv' ? 'selected' : ''}>CSV data</option></select></label><button data-action="export">Export report</button></div></div></header>
+        <main class="bi-main"><header class="bi-topbar"><div><p class="eyebrow">WIND RESOURCE INTELLIGENCE</p><h1>${html(state.template)}</h1><p>Power BI-style, filter-aware reporting from measured wind and environmental source data.</p></div><div class="bi-top-actions"><button data-action="theme">${state.dark ? '☀ Light' : '◐ Dark'}</button><button data-action="save">Save</button><div class="bi-export-control"><label><span>Export format</span><select data-export-format><option value="pdf" ${state.exportFormat === 'pdf' ? 'selected' : ''}>PDF report</option><option value="csv" ${state.exportFormat === 'csv' ? 'selected' : ''}>CSV data</option></select></label><button data-action="export">Export report</button></div></div></header>
         <section class="bi-filter-bar"><label>Data source<select data-state="source"><option value="zetdc" ${state.source === 'zetdc' ? 'selected' : ''}>ZETDC Wind Mast data</option><option value="live" ${state.source === 'live' ? 'selected' : ''}>Live Wind Maps Data</option><option value="difference" ${state.source === 'difference' ? 'selected' : ''}>Live minus ZETDC</option></select></label><label>Province<select data-state="province"><option>All provinces</option>${provinces.map(province => `<option ${state.province === province ? 'selected' : ''}>${html(province)}</option>`).join('')}</select></label><label>Wind point<select data-state="point"><option>All wind points</option>${points.filter(point => state.province === 'All provinces' || point.province === state.province).map(point => `<option value="${point.id}" ${state.point === String(point.id) ? 'selected' : ''}>${html(point.name)}</option>`).join('')}</select></label><label>Latest source window<select data-state="days">${[1, 7, 30, 90].map(days => `<option value="${days}" ${state.days === days ? 'selected' : ''}>${days} day${days === 1 ? '' : 's'}</option>`).join('')}</select></label><label>Measure<select data-state="metric">${Object.entries(labels).map(([key, [name]]) => `<option value="${key}" ${state.metric === key ? 'selected' : ''}>${html(name)}</option>`).join('')}</select></label><label>Visualization<select data-state="visualization">${visualizationOptions.map(option => `<option ${state.visualization === option ? 'selected' : ''}>${option}</option>`).join('')}</select></label></section>
         <div class="bi-filter-context"><span>Active context:</span><b>${html(sourceLabel())} · ${html(scopeLabel())} · latest ${state.days} days per point</b><i>${sourceRecordCount.toLocaleString()} records</i></div>
         <div class="bi-report-content"><section class="bi-pdf-page bi-pdf-page-one"><header class="bi-export-header"><div><img src="/zesa-logo.png" alt="ZESA"/><div><p>ZIMBABWE ELECTRICITY SUPPLY AUTHORITY</p><h1>${html(state.template)}</h1><span>Wind Assessment System · Advanced Analytics Report</span></div></div><dl><div><dt>Generated</dt><dd>${html(generatedAt)}</dd></div><div><dt>Source</dt><dd>${html(sourceLabel())}</dd></div><div><dt>Scope</dt><dd>${html(scopeLabel())}</dd></div><div><dt>Window</dt><dd>Latest ${state.days} source days per point</dd></div></dl></header>
           <section class="bi-powerbi-grid"><section class="bi-canvas" data-visualization="${state.visualization}"><header><div><p class="eyebrow">${state.visualization.toUpperCase()}</p><h2>${html(labels[state.metric]?.[0])} by wind point</h2><span>Latest ${state.days} source days per point · ${fmt(quality)}% average quality</span></div></header><div class="bi-chart">${visualizationMarkup}</div><footer><span>Dimension: wind point</span><span>Measure: ${html(labels[state.metric]?.[0])} (${html(unit())})</span><span>${html(sourceLabel())}</span></footer></section>${mapMarkup(rows)}</section></section>
-          <section class="bi-pdf-page bi-pdf-page-two"><section class="bi-bottom-grid"><section class="bi-table-panel"><header><div><p class="eyebrow">FILTERED SITE DETAIL</p><h2>Wind-point results and source coverage</h2></div><span>${rows.length} selected point${rows.length === 1 ? '' : 's'}</span></header><div class="bi-table-wrap"><table><thead><tr><th>Wind point</th><th>Province / region</th><th>${html(labels[state.metric]?.[0])}</th><th>Wind</th><th>Energy</th><th>Quality</th><th>Availability</th><th>Records</th></tr></thead><tbody>${ranked.map(row => `<tr data-point="${row.id}"><td><b>${html(row.name)}</b><small>${html(row.source_folder)} · ${html(row.source_id)}</small></td><td>${html(row.province)}<small>${html(row.region)} · ${html(row.district)}</small></td><td><b>${html(formatted(metricValue(row)))}</b></td><td>${fmt(row.wind)} m/s</td><td>${fmt(row.energy)} MWh</td><td>${fmt(row.quality)}%</td><td>${fmt(row.availability)}%</td><td>${row.records.toLocaleString()}</td></tr>`).join('')}</tbody></table></div></section>
+          <section class="bi-pdf-page bi-pdf-page-two"><section class="bi-bottom-grid"><section class="bi-table-panel"><header><div><p class="eyebrow">FILTERED SITE DETAIL</p><h2>Wind-point results and source coverage</h2></div><span>${rows.length} selected point${rows.length === 1 ? '' : 's'}</span></header><div class="bi-table-wrap"><table><thead><tr><th>Wind point</th><th>Province / region</th><th>${html(labels[state.metric]?.[0])}</th><th>Average wind</th><th>Wind range</th><th>Direction</th><th>Quality</th><th>Records</th></tr></thead><tbody>${ranked.map(row => `<tr data-point="${row.id}"><td><b>${html(row.name)}</b><small>${html(row.source_folder)} · ${html(row.source_id)}</small></td><td>${html(row.province)}<small>${html(row.region)} · ${html(row.district)}</small></td><td><b>${html(formatted(metricValue(row)))}</b></td><td>${fmt(row.wind)} m/s</td><td>${fmt(row.minWind)}–${fmt(row.maxWind)} m/s</td><td>${fmt(row.direction, 1)}°</td><td>${fmt(row.quality)}%</td><td>${row.records.toLocaleString()}</td></tr>`).join('')}</tbody></table></div></section>
             <aside class="bi-insight-panel"><div class="bi-panel-body"><p class="eyebrow">REPORT INSIGHTS</p><h2>${html(state.template)}</h2><div class="bi-insight-highlight"><small>Leading wind point</small><strong>${leader ? html(leader.name) : 'No matching data'}</strong><span>${leader ? html(formatted(metricValue(leader))) : '—'}</span></div><p>${leader && lowest ? `${html(leader.name)} has the highest filtered value. ${html(lowest.name)} has the lowest at ${html(formatted(metricValue(lowest)))}; the selected-point average is ${html(formatted(meanMetric))}.` : 'Adjust the filters to include source records.'}</p><h3>Interpretation</h3><p>${html(interpretations[state.metric] || 'Values reflect the active filters and source window.')}</p><h3>Coverage and provenance</h3><ul><li>${coverage} of ${rows.length} selected points contribute records.</li><li>${sourceRecordCount.toLocaleString()} source records are represented.</li><li>Data source: ${html(sourceLabel())}.</li><li>${state.source === 'difference' ? 'Values show live-source results minus mast results; negative values mean the live result is lower.' : 'Map markers and visuals use the same selected metric and filter scope.'}</li></ul></div></aside></section>
-          <section class="bi-report-notes"><article><p class="eyebrow">METHODOLOGY</p><h2>How to read this report</h2><p>The selected metric is aggregated per wind point over the latest ${state.days} available source day${state.days === 1 ? '' : 's'}. Fleet averages are weighted by record count where appropriate. Energy, revenue, power, and capacity factor are explicitly derived assessment measures.</p></article><article><p class="eyebrow">REPORT DEFINITION</p><dl><div><dt>Template</dt><dd>${html(state.template)}</dd></div><div><dt>Visualization</dt><dd>${html(state.visualization)}</dd></div><div><dt>Map measure</dt><dd>${html(labels[state.metric]?.[0])}</dd></div><div><dt>Generated</dt><dd>${html(generatedAt)}</dd></div></dl></article></section>
+          <section class="bi-report-notes"><article><p class="eyebrow">METHODOLOGY</p><h2>How to read this report</h2><p>The selected metric is aggregated per wind point over the latest ${state.days} available source day${state.days === 1 ? '' : 's'}. Fleet averages are weighted by record count, while minimum and maximum wind values retain their source extrema.</p></article><article><p class="eyebrow">REPORT DEFINITION</p><dl><div><dt>Template</dt><dd>${html(state.template)}</dd></div><div><dt>Visualization</dt><dd>${html(state.visualization)}</dd></div><div><dt>Map measure</dt><dd>${html(labels[state.metric]?.[0])}</dd></div><div><dt>Generated</dt><dd>${html(generatedAt)}</dd></div></dl></article></section>
           <footer class="bi-report-footer"><span>ZETDC Wind Assessment System</span><span>Internal analytical report · screening and operational assessment use</span><span>${html(generatedAt)}</span></footer></section>
         </div></main></section>`;
 

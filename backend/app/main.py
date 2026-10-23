@@ -11,12 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from .identity import authenticate_ec_number
-from .data import turbines, recent_readings, daily_summaries, daily_summaries_for, monthly_history, monthly_history_for, refresh_energy_calculations, DATA_SOURCE, READINGS_BY_TURBINE
+from .data import turbines, recent_readings, daily_summaries, daily_summaries_for, latest_reported_month, monthly_history, monthly_history_for, DATA_SOURCE, READINGS_BY_TURBINE
+from .environment_wind import build_environment_wind_summary
 from .forecasting import build_forecast
 from .metrics import calculate_metrics
-from .open_meteo import collect_open_meteo, cached_open_meteo, live_readings, live_stations
+from .open_meteo import collect_open_meteo, cached_open_meteo, current_month_period, live_readings, live_stations, summarize_province_period
 from .osm import reverse_osm_location
-from .wind_energy import get_wind_energy_settings, save_wind_energy_settings, swept_area_m2
 
 app = FastAPI(title="Zesa Wind Assessment System API")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
@@ -31,16 +31,20 @@ admin_users = [
 
 def _source_meta(source: str):
     if source == "live":
-        return {"source": "open_meteo_live", "label": "Live Wind Maps Data", "provider": "Open-Meteo"}
-    return {"source": "zetdc_mast", "label": "ZETDC Wind Mast data", "provider": "ZETDC"}
-
-
-def _capacity_by_id():
-    return {int(asset["id"]): asset["capacity_kw"] for asset in turbines()}
+        return {
+            "source": "open_meteo_live",
+            "label": "Live Wind Maps Data",
+            "provider": "Open-Meteo",
+        }
+    return {
+        "source": "zetdc_mast",
+        "label": "ZETDC Wind Mast data",
+        "provider": "ZETDC",
+    }
 
 
 def _live_rows():
-    return live_readings(turbines(), _capacity_by_id())
+    return live_readings(turbines())
 
 
 def _live_by_turbine():
@@ -71,10 +75,12 @@ def _history_for_source(source: str):
 async def _daily_open_meteo_refresh():
     while True:
         try:
-            await asyncio.to_thread(collect_open_meteo, turbines())
+            await asyncio.to_thread(collect_open_meteo, turbines(), current_month_period())
         except Exception:
             pass
-        await asyncio.sleep(60 * 60 * 24)
+        # Successful results are retained for the day. Hourly checks mean a
+        # provider/network outage is retried soon after the system is online.
+        await asyncio.sleep(60 * 60)
 
 class Login(BaseModel): ec_number: str; password: str
 class Report(BaseModel): title: str; config: dict
@@ -87,23 +93,6 @@ class AdminUser(BaseModel):
     position: str = ""
     company: str = "ZESA"
     role: str = "Guest"
-
-class WindEnergySettings(BaseModel):
-    blade_radius_m: float = 30.0
-    power_coefficient: float = 0.42
-    system_efficiency: float = 0.92
-    sample_interval_minutes: float = 10.0
-    tariff_usd_per_mwh: float = 82.0
-    cap_to_capacity: bool = True
-
-def _wind_energy_payload(settings: dict):
-    return {
-        **settings,
-        "rotor_swept_area_m2": round(swept_area_m2(settings), 3),
-        "formula": "P = 0.5 * rho * A * v^3 * Cp * efficiency",
-        "energy_formula": "Energy MWh = power kW * interval hours / 1000",
-        "source_note": "Formula constants are applied to ZETDC Wind Mast data, Live Wind Maps Data, reports, and predictions.",
-    }
 
 def user(token: HTTPAuthorizationCredentials = Depends(security)):
     try: return jwt.decode(token.credentials, SECRET, algorithms=["HS256"])
@@ -132,20 +121,56 @@ def live_wind(current=Depends(user)):
 @app.get("/metrics")
 def metrics(source: str = "zetdc", current=Depends(user)):
     current_readings = _readings_for_source(source, 1)
-    fleet = calculate_metrics(current_readings, sum(t["capacity_kw"] for t in turbines()))
+    fleet = calculate_metrics(current_readings)
     provinces = []
     for province in sorted(set(t["province"] for t in turbines())):
         turbine_ids = [t["id"] for t in turbines() if t["province"] == province]
         rs = [r for r in current_readings if r["turbine_id"] in turbine_ids]
-        m = calculate_metrics(rs, sum(t["capacity_kw"] for t in turbines() if t["id"] in turbine_ids))
+        m = calculate_metrics(rs)
         provinces.append({"province": province, "turbines": len(turbine_ids), **m})
     regions = []
     for region in sorted(set(t["region"] for t in turbines())):
         turbine_ids = [t["id"] for t in turbines() if t["region"] == region]
         rs = [r for r in current_readings if r["turbine_id"] in turbine_ids]
-        capacity = sum(t["capacity_kw"] for t in turbines() if t["id"] in turbine_ids)
-        regions.append({"region": region, "turbines": len(turbine_ids), **calculate_metrics(rs, capacity)})
+        regions.append({"region": region, "turbines": len(turbine_ids), **calculate_metrics(rs)})
     return {"fleet": fleet, "regions": regions, "provinces": provinces, "source": DATA_SOURCE, "data_source": _source_meta(source)}
+@app.get("/overview-summary")
+def overview_summary(current=Depends(user)):
+    month = latest_reported_month()
+    if not month:
+        return {"mast": None, "live": None}
+    assets_by_id = {asset["id"]: asset for asset in turbines()}
+    start_date = month["first_reading_at"][:10]
+    end_date = month["last_reading_at"][:10]
+    mast_points = []
+    for point in month["points"]:
+        asset = assets_by_id[point["turbine_id"]]
+        mast_points.append({
+            **point,
+            "province": asset["province"],
+            "region": asset["region"],
+            "district": asset["district"],
+            "status": asset["status"],
+        })
+    live_period = current_month_period()
+    live = summarize_province_period(cached_open_meteo(turbines()), **live_period)
+    return {
+        "mast": {
+            "report_month": month["key"],
+            "start_date": start_date,
+            "end_date": end_date,
+            "first_reading_at": month["first_reading_at"],
+            "last_reading_at": month["last_reading_at"],
+            "average_wind_speed": month["metrics"]["wind_speed"],
+            "minimum_wind_speed": month["metrics"]["wind_speed_min"],
+            "maximum_wind_speed": month["metrics"]["wind_speed_max"],
+            "average_wind_direction": month["metrics"]["wind_direction"],
+            "records": month["records"],
+            "reporting_points": month["wind_points"],
+            "points": mast_points,
+        },
+        "live": live,
+    }
 @app.get("/readings")
 def get_readings(days: int = 7, source: str = "zetdc", current=Depends(user)):
     return _readings_for_source(source, days)
@@ -215,6 +240,12 @@ def environment_location(lat: float, lon: float, current=Depends(user)):
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise HTTPException(502, "OpenStreetMap location is temporarily unavailable") from error
 
+@app.get("/environment/wind-summary")
+def environment_wind_summary(lat: float, lon: float, current=Depends(user)):
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise HTTPException(400, "Coordinates must be valid WGS84 latitude and longitude values")
+    return build_environment_wind_summary(lat, lon)
+
 @app.get("/reports")
 def reports(current=Depends(user)): return saved_reports
 @app.post("/reports")
@@ -229,13 +260,3 @@ def create_user(payload: AdminUser, current=Depends(admin)):
     item = {**payload.model_dump(), "status": "Active", "last_login": "Never", "created_date": datetime.now(timezone.utc).date().isoformat()}
     admin_users.append(item)
     return item
-
-@app.get("/admin/wind-energy")
-def wind_energy_settings(current=Depends(admin)):
-    return _wind_energy_payload(get_wind_energy_settings())
-
-@app.put("/admin/wind-energy")
-def update_wind_energy_settings(payload: WindEnergySettings, current=Depends(admin)):
-    settings = save_wind_energy_settings(payload.model_dump())
-    refresh_energy_calculations()
-    return _wind_energy_payload(settings)

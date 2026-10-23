@@ -2,27 +2,27 @@
 
 Operational prototype for monitoring and analysing eight Zimbabwe wind-assessment points. The system combines imported ZETDC wind-mast observations with live Open-Meteo conditions, ZETDC GIS boundaries, grid infrastructure, reporting, and per-site forecasts.
 
-Power, energy, revenue, and capacity-factor values are assessment estimates rather than turbine SCADA measurements. They use the configurable formula `P = 0.5 × air density × swept area × wind speed³ × power coefficient × system efficiency` until surveyed turbine nameplate data and production telemetry are available.
+The active system presents measured wind and environmental source metrics only. Formula-derived generation fields are not calculated or exposed. The former formula implementation is retained, dormant, in `backend/app/wind_energy.py` for possible later reactivation: `P = 0.5 × air density × swept area × wind speed³ × power coefficient × system efficiency`.
 
 ## Current capabilities
 
-- Fleet overview with wind, environmental, power, quality, and availability metrics.
+- Fleet overview with measured mean wind speed, minimum/maximum wind, wind direction, environmental, quality, and availability metrics.
 - Interactive ZETDC region, wind-point, and electricity-infrastructure maps.
 - Live 10 m Open-Meteo conditions alongside measured ZETDC mast data.
 - Historical monthly and daily drill-downs with CSV/Excel sharing tools.
 - Filter-aware reports, advanced analytics, site comparisons, and PDF/CSV exports.
-- One-to-180-day forecasts for wind speed, air density, power, and energy. Each site selects either autoregressive regression or a statistical baseline using rolling-validation mean absolute error.
-- Administrator views for users and wind-energy formula settings.
+- One-to-180-day forecasts for mean wind speed and air density. Each site selects either autoregressive regression or a statistical baseline using rolling-validation mean absolute error; 90% wind planning intervals account internally for measured wind variability and validation error.
+- Administrator views for source data, wind points, forecast provenance, and users.
 
 ## Current data snapshot
 
-`backend/data/wind_points.json.gz` contains 145,817 normalized observations from 1,098 CSV files across eight measured wind points. The combined archive runs from 18 August 2025 to 13 September 2026; each point has its own start and end date, so recent-data windows are calculated per point. Source wind speed is converted from centimetres per second to metres per second during import.
+`backend/data/wind_points.json.gz` contains 145,817 normalized observations from 1,098 CSV files across eight measured wind points. The combined archive runs from 18 August 2025 to 13 September 2026; each point has its own start and end date, so recent-data windows are calculated per point. Source wind speed is converted from centimetres per second to metres per second during import. The current normalized archive has interval mean/minimum/maximum wind but no interval variability channel. The backend derives wind variability internally for forecast planning ranges, and the importer retains a source variability channel when one is present in a future Windographer export.
 
 The active points are Chivui, Dave, Dickson, Dotito, Mangwe, Mt Darwin, Plumtree, and Vungui. Coordinates come from `backend/data/wind_sites.csv`, and region/district assignments come from the supplied ZETDC boundary data.
 
 Additional sources are kept distinct in the API and interface:
 
-- `backend/data/open_meteo_live_wind.json`: cached hourly Open-Meteo weather for the eight locations. The backend attempts a refresh at startup and then daily, retaining the last successful cache if the provider is unavailable.
+- `backend/data/open_meteo_live_wind.json`: cached hourly Open-Meteo weather for the eight wind-point locations plus a current-month-to-date comparison for Zimbabwe's 10 provinces. The backend checks hourly, refreshes successful data once per Harare calendar day, and retains the last successful cache if the provider is unavailable.
 - `frontend/public/gis/zesa-grid-infrastructure.geojson`: 870 mapped grid features (401 stations, 252 transformers, 133 overhead features, and 84 cable features).
 - IRENA Global Atlas/Vortex: on-demand long-term annual wind resource at 100 m.
 - OpenStreetMap Nominatim: on-demand reverse-geocoded map location names.
@@ -124,7 +124,7 @@ python3 tools/build_grid_infrastructure_geojson.py
 
 - `JWT_SECRET` sets the API signing secret. Always provide a strong value outside local development.
 - `NOMINATIM_URL`, `NOMINATIM_USER_AGENT`, and `NOMINATIM_EMAIL` configure OpenStreetMap reverse geocoding.
-- Wind-energy settings are managed through the administrator interface and persisted to `backend/data/wind_energy_settings.json` when changed.
+- The dormant wind formula and its last settings are preserved in `backend/app/wind_energy.py` and `backend/data/wind_energy_settings.json`; neither is connected to active API responses or interface views.
 - Open-Meteo, IRENA, and Nominatim features require outbound internet access; imported mast data and the cached map layers remain local.
 - Saved reports and users created from the administrator interface are held in backend process memory and reset on restart.
 - `docker-compose.yml` is development scaffolding for the services and TimescaleDB. The current prototype still reads its operational dataset from local files and does not persist application data to PostgreSQL.

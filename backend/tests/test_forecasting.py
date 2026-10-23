@@ -7,14 +7,18 @@ from app.forecasting import _select_model, build_forecast
 def test_forecast_is_trained_from_all_eight_measured_points():
     forecast = build_forecast(turbines(), READINGS_BY_TURBINE, 30)
 
-    assert forecast["model_version"] == "validated-regression-baseline-2.0"
+    assert forecast["model_version"] == "validated-regression-2.1"
     assert forecast["training"]["wind_points"] == 8
     assert forecast["training"]["daily_site_records"] > 100
     assert len(forecast["data"]) == 30
     assert all("air_density" in row for row in forecast["data"])
+    assert all(row["lower"] <= row["wind_speed"] <= row["upper"] for row in forecast["data"])
+    assert all("wind_speed_stddev" not in row and "forecast_uncertainty" not in row for row in forecast["data"])
+    assert all("energy_mwh" not in row and "power_output" not in row for row in forecast["data"])
     assert set(forecast["by_turbine"]) == {str(asset["id"]) for asset in turbines()}
     assert all(len(rows) == 30 for rows in forecast["by_turbine"].values())
     assert all("air_density" in row for rows in forecast["by_turbine"].values() for row in rows)
+    assert all("wind_speed_stddev" not in row and "forecast_uncertainty" not in row for rows in forecast["by_turbine"].values() for row in rows)
     assert forecast["training"]["forecast_start"] == date.today().isoformat()
     assert forecast["data"][0]["date"] == date.today().isoformat()
     assert set(forecast["models_by_turbine"]) == {str(asset["id"]) for asset in turbines()}
