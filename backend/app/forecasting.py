@@ -55,10 +55,29 @@ def _baseline_values(daily: list[tuple[date, float]], targets: list[date]) -> li
     early = _mean([value for _, value in recent[:14]])
     late = _mean([value for _, value in recent[-14:]])
     trend = max(-0.02, min(0.02, (late - early) / max(len(recent) - 14, 1)))
-    return [
-        max(0.0, baseline + (weekday_means.get(target.weekday(), baseline) - baseline) * 0.65 + trend * min(index + 1, 30))
-        for index, target in enumerate(targets)
-    ]
+    last_observation = daily[-1][0] if daily else targets[0]
+    predictions = []
+    for index, target in enumerate(targets):
+        target_day = target.timetuple().tm_yday
+        seasonal_values = []
+        for observed_on, value in daily:
+            observed_day = observed_on.timetuple().tm_yday
+            distance = min(abs(target_day - observed_day), 366 - abs(target_day - observed_day))
+            if distance <= 35:
+                seasonal_values.append((value, 1.0 / (1.0 + distance)))
+        seasonal = (
+            sum(value * weight for value, weight in seasonal_values)
+            / sum(weight for _, weight in seasonal_values)
+            if seasonal_values else baseline
+        )
+        weekday_adjustment = weekday_means.get(target.weekday(), baseline) - baseline
+        lead_days = max(index + 1, (target - last_observation).days)
+        trend_adjustment = trend * min(lead_days, 45) * max(0.0, 1.0 - lead_days / 180.0)
+        predictions.append(max(
+            0.0,
+            baseline * 0.50 + seasonal * 0.35 + (baseline + weekday_adjustment) * 0.15 + trend_adjustment,
+        ))
+    return predictions
 
 
 def _solve_ridge(features: list[list[float]], targets: list[float], penalty: float = 0.08) -> list[float] | None:
@@ -92,13 +111,17 @@ def _solve_ridge(features: list[list[float]], targets: list[float], penalty: flo
 
 def _regression_features(position: int, scale: int, forecast_date: date, values: list[float]) -> list[float]:
     weekday_angle = 2 * pi * forecast_date.weekday() / 7
+    annual_angle = 2 * pi * forecast_date.timetuple().tm_yday / 365.25
     return [
         1.0,
         position / max(scale, 1),
         sin(weekday_angle),
         cos(weekday_angle),
+        sin(annual_angle),
+        cos(annual_angle),
         values[-1],
         _mean(values[-7:]),
+        _mean(values[-30:]),
     ]
 
 
@@ -313,3 +336,220 @@ def build_forecast(turbines: list[dict], readings_by_turbine: dict[int, list[dic
             for turbine_id, rows in by_turbine.items()
         },
     }
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def _source_calibration(
+    primary_readings: list[dict],
+    live_readings: list[dict],
+    metric: str,
+) -> dict:
+    """Estimate a robust local correction from overlapping daily records."""
+    primary = dict(_daily_metric(primary_readings, metric))
+    live = dict(_daily_metric(live_readings, metric))
+    overlap = sorted(set(primary) & set(live))[-120:]
+    if len(overlap) < 7:
+        return {"bias": 0.0, "mae": None, "days": len(overlap)}
+    limit = 3.0 if metric == "wind_speed" else 0.2
+    bias = max(-limit, min(limit, _median([primary[day] - live[day] for day in overlap])))
+    mae = _mean([abs(primary[day] - (live[day] + bias)) for day in overlap])
+    return {"bias": bias, "mae": mae, "days": len(overlap)}
+
+
+def _fleet_from_sites(by_turbine: dict[str, list[dict]], days: int) -> list[dict]:
+    fleet = []
+    for index in range(days):
+        point_rows = [rows[index] for rows in by_turbine.values() if len(rows) > index]
+        if not point_rows:
+            continue
+        fleet_wind = _mean([row["wind_speed"] for row in point_rows])
+        point_uncertainties = [
+            max(
+                0.25,
+                (row["upper"] - row["wind_speed"]) / 1.64,
+                (row["wind_speed"] - row["lower"]) / 1.64,
+            )
+            for row in point_rows
+        ]
+        fleet_uncertainty = sqrt(_mean([
+            uncertainty ** 2 + (row["wind_speed"] - fleet_wind) ** 2
+            for row, uncertainty in zip(point_rows, point_uncertainties)
+        ]))
+        densities = [row["air_density"] for row in point_rows if row.get("air_density") is not None]
+        fleet.append({
+            "date": point_rows[0]["date"],
+            "wind_speed": round(fleet_wind, 3),
+            "air_density": round(_mean(densities), 4) if densities else None,
+            "lower": round(max(0.0, fleet_wind - fleet_uncertainty * 1.64), 3),
+            "upper": round(fleet_wind + fleet_uncertainty * 1.64, 3),
+        })
+    return fleet
+
+
+def build_live_informed_forecast(
+    turbines: list[dict],
+    readings_by_turbine: dict[int, list[dict]],
+    days: int,
+    provider_by_turbine: dict[int, list[dict]],
+    live_history_by_turbine: dict[int, list[dict]],
+    source_mode: str,
+) -> dict:
+    """Blend direct live forecasts with locally validated adaptive forecasts.
+
+    Live-map forecasts use Open-Meteo directly for its available horizon. Mast
+    forecasts first correct that provider signal against overlapping ZETDC
+    measurements. The adaptive model supplies a smooth seasonal extension once
+    the provider horizon ends.
+    """
+    forecast = build_forecast(turbines, readings_by_turbine, days)
+    if not any(provider_by_turbine.values()):
+        return forecast
+
+    hybrid_by_turbine: dict[str, list[dict]] = {}
+    provider_sites = 0
+    provider_day_counts = []
+    calibration_maes = []
+    calibration_days = []
+    for turbine in turbines:
+        turbine_id = turbine["id"]
+        site_key = str(turbine_id)
+        base_rows = [dict(row) for row in forecast["by_turbine"].get(site_key, [])]
+        base_by_date = {row["date"]: row for row in base_rows}
+        provider_rows = [
+            row for row in provider_by_turbine.get(turbine_id, [])
+            if row.get("date") in base_by_date
+        ]
+        if not provider_rows:
+            hybrid_by_turbine[site_key] = base_rows
+            continue
+
+        provider_sites += 1
+        provider_day_counts.append(len(provider_rows))
+        if source_mode == "mast":
+            wind_calibration = _source_calibration(
+                readings_by_turbine.get(turbine_id, []),
+                live_history_by_turbine.get(turbine_id, []),
+                "wind_speed",
+            )
+            density_calibration = _source_calibration(
+                readings_by_turbine.get(turbine_id, []),
+                live_history_by_turbine.get(turbine_id, []),
+                "air_density",
+            )
+        else:
+            wind_calibration = {"bias": 0.0, "mae": None, "days": 0}
+            density_calibration = {"bias": 0.0, "mae": None, "days": 0}
+
+        if wind_calibration["mae"] is not None:
+            calibration_maes.append(float(wind_calibration["mae"]))
+        calibration_days.append(int(wind_calibration["days"]))
+        direct_by_date = {}
+        for provider_row in provider_rows:
+            base = base_by_date[provider_row["date"]]
+            wind = max(0.0, float(provider_row["wind_speed"]) + float(wind_calibration["bias"]))
+            daily_minimum = max(0.0, float(provider_row.get("wind_speed_min", wind)) + float(wind_calibration["bias"]))
+            daily_maximum = max(wind, float(provider_row.get("wind_speed_max", wind)) + float(wind_calibration["bias"]))
+            uncertainty = max(
+                0.25,
+                float(provider_row.get("wind_speed_stddev") or 0.0),
+                float(wind_calibration["mae"] or 0.0),
+            )
+            provider_density = provider_row.get("air_density")
+            density = (
+                float(provider_density) + float(density_calibration["bias"])
+                if provider_density is not None else base.get("air_density")
+            )
+            direct_by_date[provider_row["date"]] = {
+                "date": provider_row["date"],
+                "wind_speed": round(wind, 3),
+                "air_density": round(density, 4) if density is not None else None,
+                "lower": round(max(0.0, min(daily_minimum, wind - uncertainty * 1.64)), 3),
+                "upper": round(max(daily_maximum, wind + uncertainty * 1.64), 3),
+            }
+
+        last_provider_date = max(direct_by_date)
+        last_direct = direct_by_date[last_provider_date]
+        last_base = base_by_date[last_provider_date]
+        wind_bridge = last_direct["wind_speed"] - last_base["wind_speed"]
+        density_bridge = (
+            last_direct["air_density"] - last_base["air_density"]
+            if last_direct.get("air_density") is not None and last_base.get("air_density") is not None else 0.0
+        )
+        last_provider_day = date.fromisoformat(last_provider_date)
+        hybrid_rows = []
+        for base in base_rows:
+            if base["date"] in direct_by_date:
+                hybrid_rows.append(direct_by_date[base["date"]])
+                continue
+            lead_after_provider = (date.fromisoformat(base["date"]) - last_provider_day).days
+            if lead_after_provider <= 0:
+                hybrid_rows.append(base)
+                continue
+            bridge_weight = max(0.0, 1.0 - lead_after_provider / 30.0)
+            shift = wind_bridge * bridge_weight
+            density_shift = density_bridge * bridge_weight
+            hybrid_rows.append({
+                **base,
+                "wind_speed": round(max(0.0, base["wind_speed"] + shift), 3),
+                "air_density": round(base["air_density"] + density_shift, 4)
+                if base.get("air_density") is not None else None,
+                "lower": round(max(0.0, base["lower"] + shift), 3),
+                "upper": round(max(0.0, base["upper"] + shift), 3),
+            })
+        hybrid_by_turbine[site_key] = hybrid_rows
+
+        diagnostic = forecast["models_by_turbine"].setdefault(site_key, {})
+        wind_diagnostic = {
+            "forecast_method": "mast_live_calibrated" if source_mode == "mast" else "open_meteo_direct",
+            "provider_days": len(provider_rows),
+            "calibration_days": wind_calibration["days"],
+            "live_bias_mps": round(float(wind_calibration["bias"]), 3),
+            "provider_mae": round(float(wind_calibration["mae"]), 3)
+            if wind_calibration["mae"] is not None else None,
+        }
+        density_diagnostic = {
+            "forecast_method": "mast_live_calibrated" if source_mode == "mast" else "open_meteo_direct",
+            "provider_days": len(provider_rows),
+            "calibration_days": density_calibration["days"],
+            "provider_mae": round(float(density_calibration["mae"]), 4)
+            if density_calibration["mae"] is not None else None,
+        }
+        diagnostic.update(wind_diagnostic)
+        diagnostic.setdefault("metrics", {}).setdefault("wind_speed", {}).update(wind_diagnostic)
+        diagnostic["metrics"].setdefault("air_density", {}).update(density_diagnostic)
+
+    forecast["by_turbine"] = hybrid_by_turbine
+    forecast["data"] = _fleet_from_sites(hybrid_by_turbine, days)
+    forecast["model_version"] = "live-informed-hybrid-3.0"
+    forecast["forecast_method"] = (
+        "ZETDC mast-calibrated Open-Meteo forecast with seasonal extension"
+        if source_mode == "mast"
+        else "Open-Meteo direct forecast with seasonal adaptive extension"
+    )
+    forecast["model_basis"] = (
+        "direct daily live forecasts are bias-corrected against overlapping ZETDC mast observations; "
+        "the validated seasonal model extends beyond the provider horizon"
+        if source_mode == "mast"
+        else "daily refreshed Open-Meteo forecasts are used directly for the provider horizon; "
+        "the validated seasonal model extends longer planning horizons"
+    )
+    forecast["validation"]["provider_sites"] = provider_sites
+    forecast["validation"]["calibration_days"] = max(calibration_days, default=0)
+    forecast["training"]["provider_forecast_days"] = max(provider_day_counts, default=0)
+    forecast["training"]["live_history_days"] = len({
+        row["timestamp"][:10]
+        for rows in live_history_by_turbine.values()
+        for row in rows
+    })
+    if calibration_maes:
+        forecast["backtest_mae"] = round(_mean(calibration_maes), 3)
+    return forecast

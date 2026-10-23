@@ -16,6 +16,17 @@
   outline-offset: 2px;
 }
 
+.workspace > header .live.refreshing i {
+  background: #d49e16;
+  animation: live-header-pulse 1s ease-in-out infinite;
+}
+
+.workspace > header .live.error i { background: #d85e76; }
+
+@keyframes live-header-pulse {
+  50% { opacity: .35; transform: scale(.75); }
+}
+
 @media (max-width: 1150px) {
   .dashboard-summary-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -18,6 +18,10 @@ CACHE_PATH = Path(__file__).resolve().parents[1] / "data" / "open_meteo_live_win
 CAT = timezone(timedelta(hours=2))
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 HOURLY = "wind_speed_10m,wind_direction_10m,temperature_2m,relative_humidity_2m,surface_pressure"
+LIVE_CACHE_VERSION = 2
+LIVE_HISTORY_DAYS = 92
+LIVE_FORECAST_DAYS = 16
+LIVE_ARCHIVE_RETENTION_DAYS = 730
 
 # Provincial capitals provide a stable, recognisable reference location for
 # the national live-model comparison. These are deliberately separate from
@@ -50,17 +54,25 @@ def current_month_period() -> dict:
     }
 
 
+@lru_cache(maxsize=2)
+def _read_cache_version(path: str, modified_ns: int) -> dict:
+    """Parse a cache version once instead of reparsing it for every API call."""
+    del modified_ns
+    with Path(path).open(encoding="utf-8") as source:
+        return json.load(source)
+
+
 def _read_cache() -> dict | None:
     if not CACHE_PATH.exists():
         return None
-    with CACHE_PATH.open(encoding="utf-8") as source:
-        return json.load(source)
+    return _read_cache_version(str(CACHE_PATH), CACHE_PATH.stat().st_mtime_ns)
 
 
 def _write_cache(payload: dict) -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with CACHE_PATH.open("w", encoding="utf-8") as target:
         json.dump(payload, target, separators=(",", ":"))
+    _read_cache_version.cache_clear()
 
 
 def _fetch_open_meteo(turbines: list[dict]) -> dict:
@@ -68,7 +80,10 @@ def _fetch_open_meteo(turbines: list[dict]) -> dict:
         "latitude": ",".join(str(asset["lat"]) for asset in turbines),
         "longitude": ",".join(str(asset["lon"]) for asset in turbines),
         "hourly": HOURLY,
-        "forecast_days": "1",
+        # The rolling archive provides enough recent variation for validation
+        # and the full provider horizon avoids extrapolating a single live day.
+        "past_days": str(LIVE_HISTORY_DAYS),
+        "forecast_days": str(LIVE_FORECAST_DAYS),
         "timezone": "Africa/Harare",
         "wind_speed_unit": "ms",
         "models": "best_match",
@@ -79,6 +94,7 @@ def _fetch_open_meteo(turbines: list[dict]) -> dict:
         raw = json.loads(response.read().decode("utf-8"))
     locations = raw if isinstance(raw, list) else [raw]
     return {
+        "cache_version": LIVE_CACHE_VERSION,
         "source": "open_meteo_live",
         "provider": "Open-Meteo",
         "provider_url": "https://open-meteo.com",
@@ -86,8 +102,86 @@ def _fetch_open_meteo(turbines: list[dict]) -> dict:
         "collected_for": _today_key(),
         "collected_at": datetime.now(timezone.utc).isoformat(),
         "variables": HOURLY.split(","),
+        "history_days": LIVE_HISTORY_DAYS,
+        "forecast_days": LIVE_FORECAST_DAYS,
         "locations": locations,
     }
+
+
+def _payload_local_cutoff(payload: dict) -> datetime:
+    collected_at = payload.get("collected_at")
+    if collected_at:
+        return datetime.fromisoformat(collected_at).astimezone(CAT).replace(tzinfo=None)
+    return datetime.now(CAT).replace(tzinfo=None)
+
+
+def _location_id(location: dict, index: int) -> int:
+    return int(location.get("location_id", index))
+
+
+def _completed_location(location: dict, cutoff: datetime, earliest: date | None = None) -> dict:
+    """Copy only model hours that were available at collection time."""
+    hourly = location.get("hourly", {})
+    times = hourly.get("time", [])
+    selected = [
+        index
+        for index, timestamp in enumerate(times)
+        if datetime.fromisoformat(timestamp) <= cutoff
+        and (earliest is None or timestamp[:10] >= earliest.isoformat())
+    ]
+    completed = {key: value for key, value in location.items() if key != "hourly"}
+    completed["hourly"] = {
+        key: [values[index] for index in selected if index < len(values)]
+        for key, values in hourly.items()
+        if isinstance(values, list)
+    }
+    return completed
+
+
+def _merge_location_history(old: dict | None, fresh: dict, cutoff: datetime, earliest: date) -> dict:
+    """Merge hourly samples by timestamp so each daily refresh grows History."""
+    variables = HOURLY.split(",")
+    samples: dict[str, dict[str, float | None]] = {}
+    for location in (old, _completed_location(fresh, cutoff, earliest)):
+        if not location:
+            continue
+        hourly = location.get("hourly", {})
+        times = hourly.get("time", [])
+        for index, timestamp in enumerate(times):
+            if timestamp[:10] < earliest.isoformat() or datetime.fromisoformat(timestamp) > cutoff:
+                continue
+            sample = samples.setdefault(timestamp, {})
+            for variable in variables:
+                values = hourly.get(variable, [])
+                if index < len(values):
+                    sample[variable] = values[index]
+
+    merged = {key: value for key, value in fresh.items() if key != "hourly"}
+    ordered_times = sorted(samples)
+    merged["hourly"] = {"time": ordered_times}
+    for variable in variables:
+        merged["hourly"][variable] = [samples[timestamp].get(variable) for timestamp in ordered_times]
+    return merged
+
+
+def _merge_live_history(cached: dict, fresh: dict) -> list[dict]:
+    """Retain completed live-model hours across successful daily refreshes."""
+    cutoff = _payload_local_cutoff(fresh)
+    earliest = cutoff.date() - timedelta(days=LIVE_ARCHIVE_RETENTION_DAYS)
+    old_locations = cached.get("history_locations")
+    if not old_locations:
+        old_locations = [
+            _completed_location(location, _payload_local_cutoff(cached), earliest)
+            for location in cached.get("locations", [])
+        ]
+    old_by_id = {
+        _location_id(location, index): location
+        for index, location in enumerate(old_locations)
+    }
+    return [
+        _merge_location_history(old_by_id.get(_location_id(location, index)), location, cutoff, earliest)
+        for index, location in enumerate(fresh.get("locations", []))
+    ]
 
 
 def _fetch_province_period(report_month: str, start_date: str, end_date: str) -> dict:
@@ -144,13 +238,23 @@ def collect_open_meteo(
     cached = _read_cache() or {}
     payload = dict(cached)
     live_is_current = (
-        cached.get("collected_for") == _today_key()
+        cached.get("cache_version") == LIVE_CACHE_VERSION
+        and cached.get("collected_for") == _today_key()
         and len(cached.get("locations", [])) == len(turbines)
+        and len(cached.get("history_locations", [])) == len(turbines)
+        and cached.get("forecast_days") == LIVE_FORECAST_DAYS
     )
     live_error = None
     if force or not live_is_current:
         try:
             fresh = _fetch_open_meteo(turbines)
+            fresh["history_locations"] = _merge_live_history(cached, fresh)
+            observed_times = [
+                timestamp
+                for location in fresh["history_locations"]
+                for timestamp in location.get("hourly", {}).get("time", [])[-1:]
+            ]
+            fresh["observed_through"] = max(observed_times, default=None)
             province_period = payload.get("province_period")
             payload = fresh
             if province_period:
@@ -270,11 +374,25 @@ def summarize_province_period(payload: dict, report_month: str, start_date: str,
     }
 
 
-def live_readings(turbines: list[dict]) -> list[dict]:
+def live_readings(turbines: list[dict], payload: dict | None = None) -> list[dict]:
     """Return live wind and environmental observations."""
-    payload = cached_open_meteo(turbines)
+    payload = payload or cached_open_meteo(turbines)
     readings = []
-    for turbine, location in zip(turbines, payload.get("locations", [])):
+    history_locations = payload.get("history_locations")
+    if not history_locations:
+        earliest = _payload_local_cutoff(payload).date() - timedelta(days=LIVE_ARCHIVE_RETENTION_DAYS)
+        history_locations = [
+            _completed_location(location, _payload_local_cutoff(payload), earliest)
+            for location in payload.get("locations", [])
+        ]
+    locations_by_id = {
+        _location_id(location, index): location
+        for index, location in enumerate(history_locations)
+    }
+    for index, turbine in enumerate(turbines):
+        location = locations_by_id.get(index)
+        if location is None:
+            continue
         hourly = location.get("hourly", {})
         times = hourly.get("time", [])
         wind = hourly.get("wind_speed_10m", [])
@@ -309,8 +427,58 @@ def live_readings(turbines: list[dict]) -> list[dict]:
     return sorted(readings, key=lambda item: (item["timestamp"], item["turbine_id"]))
 
 
-def live_stations(turbines: list[dict]) -> list[dict]:
-    rows = live_readings(turbines)
+def live_forecast_days(turbines: list[dict], days: int = LIVE_FORECAST_DAYS) -> dict[int, list[dict]]:
+    """Return the current Open-Meteo hourly forecast as per-site daily rows."""
+    payload = cached_open_meteo(turbines)
+    locations_by_id = {
+        _location_id(location, index): location
+        for index, location in enumerate(payload.get("locations", []))
+    }
+    start = date.fromisoformat(_today_key())
+    end = start + timedelta(days=max(1, min(days, LIVE_FORECAST_DAYS)))
+    result: dict[int, list[dict]] = {}
+    for index, turbine in enumerate(turbines):
+        location = locations_by_id.get(index, {})
+        hourly = location.get("hourly", {})
+        grouped: dict[str, list[dict]] = defaultdict(list)
+        times = hourly.get("time", [])
+        for row_index, timestamp in enumerate(times):
+            observed_on = datetime.fromisoformat(timestamp).date()
+            if not (start <= observed_on < end):
+                continue
+            wind_values = hourly.get("wind_speed_10m", [])
+            if row_index >= len(wind_values) or wind_values[row_index] is None:
+                continue
+            temperature_values = hourly.get("temperature_2m", [])
+            humidity_values = hourly.get("relative_humidity_2m", [])
+            pressure_values = hourly.get("surface_pressure", [])
+            temperature_c = temperature_values[row_index] if row_index < len(temperature_values) else None
+            humidity_pct = humidity_values[row_index] if row_index < len(humidity_values) else None
+            pressure_hpa = pressure_values[row_index] if row_index < len(pressure_values) else None
+            grouped[observed_on.isoformat()].append({
+                "wind_speed": float(wind_values[row_index]),
+                "air_density": air_density_kg_m3(temperature_c, humidity_pct, pressure_hpa)
+                if None not in (temperature_c, humidity_pct, pressure_hpa) else None,
+            })
+        daily = []
+        for date_key, rows in sorted(grouped.items()):
+            winds = [row["wind_speed"] for row in rows]
+            densities = [row["air_density"] for row in rows if row["air_density"] is not None]
+            daily.append({
+                "date": date_key,
+                "wind_speed": round(sum(winds) / len(winds), 3),
+                "wind_speed_min": round(min(winds), 3),
+                "wind_speed_max": round(max(winds), 3),
+                "wind_speed_stddev": round(wind_speed_stddev(winds) or 0.0, 3),
+                "air_density": round(sum(densities) / len(densities), 4) if densities else None,
+                "samples": len(winds),
+            })
+        result[turbine["id"]] = daily
+    return result
+
+
+def live_stations(turbines: list[dict], payload: dict | None = None) -> list[dict]:
+    rows = live_readings(turbines, payload)
     now = datetime.now(CAT)
     latest_by_point: dict[int, dict] = {}
     rows_by_point: dict[int, list[dict]] = {}

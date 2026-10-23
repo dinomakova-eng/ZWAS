@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Activity, BarChart3, Bolt, Copy, Download, History as HistoryIcon, LayoutDashboard, LogOut, Mail, MapPin, Settings, Share2, Sparkles, Wind, X } from 'lucide-react';
+import { Activity, BarChart3, Bolt, Copy, Download, History as HistoryIcon, LayoutDashboard, LogOut, Mail, MapPin, RefreshCw, Settings, Share2, Sparkles, Wind, X } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -46,7 +46,7 @@ import './reports-workspace';
 import './comparison-workspace';
 import './compact-page-headers.css';
 import './environment-module.css';
-import {getApiData, clearApiCache} from './data-client';
+import {getApiData, clearApiCache, refreshLiveData} from './data-client';
 import {navigateApp} from './navigation';
 import {EnvironmentModule} from './environment-module';
 const initOsmFleetMap = async () => {
@@ -60,8 +60,8 @@ const initOsmFleetMap = async () => {
     const { t } = JSON.parse(auth);
     const [regions, turbines, live] = await Promise.all([
         fetch('/gis/zetdc-regions.geojson').then(response => response.json()),
-        fetch(API + '/turbines', { headers: { Authorization: `Bearer ${t}` } }).then(response => response.json()),
-        fetch(API + '/live-wind', { headers: { Authorization: `Bearer ${t}` } }).then(response => response.ok ? response.json() : null).catch(() => null),
+        getApiData<any[]>('/turbines', t),
+        getApiData<any>('/live-wind', t).catch(() => null),
     ]);
     target.innerHTML = '';
     const map = L.map(target, {
@@ -272,7 +272,6 @@ const initOsmFleetMap = async () => {
             if (hoverPopup.isActive()) marker.openPopup();
         });
     });
-    loadGridData().catch(() => undefined);
     (live?.stations || []).forEach((asset: any) => {
         const wind = Number(asset.latest_wind_speed || 0).toFixed(2);
         const stddev = Number(asset.wind_speed_stddev || 0).toFixed(2);
@@ -292,7 +291,6 @@ const initOsmFleetMap = async () => {
     });
 };
 window.addEventListener('zetdc:route-ready', () => { initOsmFleetMap().catch(() => undefined); });
-setInterval(() => { initOsmFleetMap().catch(() => undefined); }, 1500);
 const initLoginOsmMap = async () => {
     const target = document.querySelector<HTMLElement>('.login .zim-outline:not([data-osm-map])');
     if (!target)
@@ -334,7 +332,6 @@ const initLoginOsmMap = async () => {
     [[turbinePoints[0], pylons[1]], [turbinePoints[1], pylons[0]], [turbinePoints[2], pylons[1]], [turbinePoints[3], pylons[1]], [turbinePoints[4], pylons[2]], [turbinePoints[5], pylons[1]], [turbinePoints[6], pylons[2]], [turbinePoints[7], pylons[0]]].forEach(path => L.polyline(path, cableStyle).addTo(map));
     requestAnimationFrame(() => map.invalidateSize());
 };
-setInterval(() => { initLoginOsmMap().catch(() => undefined); }, 500);
 const API = '/api';
 type User = {
     name: string;
@@ -350,7 +347,7 @@ document.addEventListener('click', event => { if ((event.target as HTMLElement).
     navigateApp('/'); });
 function Login({ onLogin }: {
     onLogin: (u: User, t: string) => void;
-}) { const [ec, setEc] = useState('ze9160517'), [password, setPassword] = useState('ZETDC2026!'), [error, setError] = useState(''); const submit = async (e: React.FormEvent) => { e.preventDefault(); setError(''); try { const r = await fetch(API + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ec_number: ec.trim(), password }) }); if (!r.ok) {
+}) { useEffect(() => { initLoginOsmMap().catch(() => undefined); }, []); const [ec, setEc] = useState('ze9160517'), [password, setPassword] = useState('ZETDC2026!'), [error, setError] = useState(''); const submit = async (e: React.FormEvent) => { e.preventDefault(); setError(''); try { const r = await fetch(API + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ec_number: ec.trim(), password }) }); if (!r.ok) {
     setError('The EC number or password is incorrect.');
     return;
 } const d = await r.json(); onLogin(d.user, d.token); } catch {
@@ -362,12 +359,34 @@ function Layout({ user, token, onLogout }: {
     onLogout: () => void;
 }) {
     const location = useLocation();
+    const [liveRevision, setLiveRevision] = useState(0);
+    const [liveRefreshState, setLiveRefreshState] = useState<'refreshing' | 'current' | 'error'>('refreshing');
     const compactPageHeader = location.pathname.startsWith('/reports') || location.pathname === '/predictions' || location.pathname === '/environment';
-    useEffect(() => { window.dispatchEvent(new Event('zetdc:route-ready')); });
+    useEffect(() => {
+        const started = () => setLiveRefreshState('refreshing');
+        const refreshed = () => {
+            setLiveRefreshState('current');
+            setLiveRevision(current => current + 1);
+        };
+        const failed = () => setLiveRefreshState('error');
+        window.addEventListener('zetdc:live-data-refresh-started', started);
+        window.addEventListener('zetdc:live-data-refreshed', refreshed);
+        window.addEventListener('zetdc:live-data-refresh-error', failed);
+        refreshLiveData(token, 'system_open').catch(() => undefined);
+        return () => {
+            window.removeEventListener('zetdc:live-data-refresh-started', started);
+            window.removeEventListener('zetdc:live-data-refreshed', refreshed);
+            window.removeEventListener('zetdc:live-data-refresh-error', failed);
+        };
+    }, [token]);
+    useEffect(() => { window.dispatchEvent(new Event('zetdc:route-ready')); }, [location.pathname, liveRevision]);
+    const liveStatus = liveRefreshState === 'refreshing'
+        ? 'REFRESHING LIVE DATA'
+        : liveRefreshState === 'error' ? 'CACHED LIVE DATA' : 'LIVE DATA CURRENT';
     return <div className="shell"><aside><div className="logo"><span><Wind /></span><b>ZESA</b><small>WIND ASSESSMENT SYSTEM</small></div><nav>
     <NavLink to="/"><LayoutDashboard /> Overview</NavLink><NavLink to="/environment"><MapPin /> Wind Map</NavLink><NavLink to="/reports"><BarChart3 /> Reports</NavLink><NavLink to="/predictions"><Sparkles /> Predictions</NavLink><NavLink to="/history"><HistoryIcon /> History</NavLink>{user.role === 'admin' && <NavLink to="/admin"><Settings /> Administration</NavLink>}
-  </nav><div className="sidebar-foot"><div className="user-avatar">{user.name.split(' ').map(x => x[0]).join('')}</div><div><strong>{user.name}</strong><small>{user.role} · {user.ec_number}</small></div><button aria-label="Sign out" title="Sign out" onClick={onLogout}><LogOut size={18}/></button></div></aside><section className={`workspace${compactPageHeader ? ' compact-page-header' : ''}`}><header><div><p className="eyebrow">NATIONAL RENEWABLES OPERATIONS</p><h2>Wind Measurement Control</h2></div><div className="live"><i /> MEASURED DATA <span>8 WIND POINTS</span></div></header><Routes>
-    <Route path="/" element={<Dashboard token={token}/>}/><Route path="/environment" element={<EnvironmentModule token={token}/>}/><Route path="/summary/:focus" element={<SummaryDetail token={token}/>}/><Route path="/turbines/:id" element={<TurbineDetail token={token}/>}/><Route path="/reports" element={<ReportsWorkspace />}/><Route path="/reports/analytics" element={<Analytics />}/><Route path="/reports/compare" element={<Compare />}/><Route path="/predictions" element={<PredictionsWorkspace />}/><Route path="/history" element={<HistoryWorkspace token={token}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin token={token}/> : <Navigate to="/"/>}/>
+  </nav><div className="sidebar-foot"><div className="user-avatar">{user.name.split(' ').map(x => x[0]).join('')}</div><div><strong>{user.name}</strong><small>{user.role} · {user.ec_number}</small></div><button aria-label="Sign out" title="Sign out" onClick={onLogout}><LogOut size={18}/></button></div></aside><section className={`workspace${compactPageHeader ? ' compact-page-header' : ''}`}><header><div><p className="eyebrow">NATIONAL RENEWABLES OPERATIONS</p><h2>Wind Measurement Control</h2></div><div className={`live ${liveRefreshState}`}><i /> {liveStatus} <span>8 WIND POINTS</span></div></header><Routes>
+    <Route path="/" element={<Dashboard key={liveRevision} token={token}/>}/><Route path="/environment" element={<EnvironmentModule key={liveRevision} token={token}/>}/><Route path="/summary/:focus" element={<SummaryDetail token={token} liveRevision={liveRevision}/>}/><Route path="/turbines/:id" element={<TurbineDetail token={token}/>}/><Route path="/reports" element={<ReportsWorkspace />}/><Route path="/reports/analytics" element={<Analytics />}/><Route path="/reports/compare" element={<Compare />}/><Route path="/predictions" element={<PredictionsWorkspace />}/><Route path="/history" element={<HistoryWorkspace token={token} liveRevision={liveRevision}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin key={liveRevision} token={token}/> : <Navigate to="/"/>}/>
   </Routes></section></div>;
 }
 function Dashboard({ token }: {
@@ -387,6 +406,12 @@ function Dashboard({ token }: {
         }, 60 * 60 * 1000);
         return () => { active = false; window.clearInterval(refresh); };
     }, [token]);
+
+    useEffect(() => {
+        if (!data) return;
+        const frame = window.requestAnimationFrame(() => { initOsmFleetMap().catch(() => undefined); });
+        return () => window.cancelAnimationFrame(frame);
+    }, [data]);
 
     if (!data) return <Loading />;
 
@@ -563,11 +588,13 @@ const formatReportMonth = (month?: string) => {
 const formatSummaryWind = (value: any) => value == null ? '—' : `${Number(value).toFixed(2)} m/s`;
 const formatSummaryDirection = (value: any) => value == null ? '—' : `${Number(value).toFixed(0)}°`;
 
-function SummaryDetail({ token }: { token: string }) {
+function SummaryDetail({ token, liveRevision }: { token: string; liveRevision: number }) {
     const { focus = 'fleet' } = useParams();
     const [assets, setAssets] = useState<any[]>([]);
     const [metrics, setMetrics] = useState<any>();
     const [overview, setOverview] = useState<any>();
+    const [refreshingLive, setRefreshingLive] = useState(false);
+    const [refreshError, setRefreshError] = useState('');
 
     useEffect(() => {
         let active = true;
@@ -579,7 +606,7 @@ function SummaryDetail({ token }: { token: string }) {
                 .catch(() => undefined);
         }, 60 * 60 * 1000);
         return () => { active = false; window.clearInterval(refresh); };
-    }, [token]);
+    }, [token, liveRevision]);
 
     if (!metrics || !overview) return <Loading />;
 
@@ -607,9 +634,22 @@ function SummaryDetail({ token }: { token: string }) {
     const summaryNote = isLive
         ? `${overview.live?.provider || 'Open-Meteo'} · daily online refresh · ${overview.live?.start_date} to ${overview.live?.end_date}`
         : isMastMonth ? `${overview.mast?.records.toLocaleString()} mast records · ${overview.mast?.start_date} to ${overview.mast?.end_date}` : 'measured source data';
+    const refreshAllLiveData = async () => {
+        if (!window.confirm('Refresh live wind data now? This will update the shared live snapshot used across the entire system.')) return;
+        setRefreshingLive(true);
+        setRefreshError('');
+        try {
+            await refreshLiveData(token, 'manual');
+        } catch (error) {
+            setRefreshError(error instanceof Error ? error.message : 'Live wind refresh failed. The last successful data remains available.');
+        } finally {
+            setRefreshingLive(false);
+        }
+    };
 
     return <main className="content summary-detail-page">
-        <div className="page-title"><p className="eyebrow">SUMMARY DRILL-DOWN</p><h1>{title}</h1><p>{note}</p></div>
+        <div className={`page-title ${isLive ? 'live-summary-title' : ''}`}><p className="eyebrow">SUMMARY DRILL-DOWN</p><h1>{title}</h1><p>{note}</p>{isLive && <div className="live-summary-refresh"><button type="button" onClick={refreshAllLiveData} disabled={refreshingLive}><RefreshCw className={refreshingLive ? 'spinning' : ''} size={16}/>{refreshingLive ? 'Refreshing all live data…' : 'Refresh live data'}</button><small>Updates every live-data module</small></div>}</div>
+        {refreshError && <p className="live-refresh-error" role="alert">{refreshError}</p>}
         <div className="stats"><article><span className="stat-icon s2">{isLive || isMastMonth || focus === 'range' ? <Wind /> : <Activity />}</span><div><small>{summaryLabel}</small><strong>{value}</strong><em>{summaryNote}</em></div></article></div>
         <div className="table-panel">
             <div className="section-heading"><div><p className="eyebrow">{isLive ? 'PROVINCE BREAKDOWN' : 'POINT BREAKDOWN'}</p><h3>{isLive ? `${liveMonthLabel} live wind across Zimbabwe’s 10 provinces` : isMastMonth ? `${mastMonthLabel} mast wind details` : focus === 'fleet' ? 'Wind point register' : 'Measured wind details'}</h3></div><button className="compact" onClick={() => navigateApp('/')}>Back to fleet map</button></div>
@@ -676,7 +716,7 @@ const historyExcelWorkbook = (worksheets: { name: string; rows: any[] }[]) => {
     return `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel"><Styles><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#DFF2FF" ss:Pattern="Solid"/></Style></Styles>${worksheetXml}</Workbook>`;
 };
 
-function HistoryWorkspace({ token }: { token: string }) {
+function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision: number }) {
     const [histories, setHistories] = useState<any>();
     const [sourceMode, setSourceMode] = useState<'zetdc' | 'live' | 'difference'>('zetdc');
     const [metricKey, setMetricKey] = useState('wind_speed');
@@ -696,7 +736,7 @@ function HistoryWorkspace({ token }: { token: string }) {
             setYear(initialYear);
             setMonth(null);
         });
-    }, [token]);
+    }, [token, liveRevision]);
 
     useEffect(() => {
         if (month == null) return;

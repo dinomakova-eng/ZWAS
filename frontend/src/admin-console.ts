@@ -77,6 +77,5 @@ const enhance = async () => {
 };
 
 window.addEventListener('zetdc:route-ready', () => { enhance().catch(() => undefined); });
-setInterval(() => { enhance().catch(() => undefined); }, 5000);
 
 export {};

@@ -193,6 +193,5 @@ const enhance = async () => {
 document.addEventListener('click', event => { const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href]'); if (link && new URL(link.href, window.location.href).pathname !== '/reports') dispose(); }, true);
 window.addEventListener('popstate', dispose);
 window.addEventListener('zetdc:route-ready', () => { dispose(); enhance().catch(() => undefined); });
-setInterval(() => { dispose(); enhance().catch(() => undefined); }, 5000);
 
 export {};

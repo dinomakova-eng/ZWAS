@@ -282,7 +282,6 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
     const controller = new AbortController();
     let disposed = false;
     let inspectionSequence = 0;
-    let map: L.Map | null = null;
     let analysisPoint: L.LatLng | null = null;
     let inspectPoint: (point: L.LatLng) => void = () => undefined;
 
@@ -307,6 +306,51 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
       popup.querySelector<HTMLButtonElement>('.environment-analysis-close')?.addEventListener('click', closeAnalysisPopup, { once: true });
       requestAnimationFrame(positionAnalysisPopup);
     };
+
+    // Show the navigable map immediately. The large infrastructure register
+    // continues loading without holding the whole page behind a blank panel.
+    const map = L.map(mapElementRef.current, {
+      zoomControl: true,
+      minZoom: 5,
+      maxZoom: 16,
+      zoomSnap: .25,
+      preferCanvas: true,
+    });
+    map.on('move zoom resize', positionAnalysisPopup);
+    window.addEventListener('resize', positionAnalysisPopup);
+    leafletMapRef.current = map;
+    map.createPane('windResource');
+    map.getPane('windResource')!.style.zIndex = '240';
+    map.createPane('regionalBoundaries');
+    map.getPane('regionalBoundaries')!.style.zIndex = '360';
+    map.createPane('gridRoutes');
+    map.getPane('gridRoutes')!.style.zIndex = '420';
+    map.createPane('gridAssets');
+    map.getPane('gridAssets')!.style.zIndex = '460';
+    map.createPane('liveWind');
+    map.getPane('liveWind')!.style.zIndex = '500';
+    map.createPane('windSites');
+    map.getPane('windSites')!.style.zIndex = '520';
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    const windResource = L.tileLayer.wms(IRENA_WMS, {
+      layers: IRENA_LAYER,
+      styles: 'ku_wind_speed',
+      format: 'image/png',
+      transparent: true,
+      version: '1.1.1',
+      opacity: opacity / 100,
+      pane: 'windResource',
+      attribution: 'IRENA Global Atlas · Vortex wind resource',
+    }).addTo(map);
+    windLayerRef.current = windResource;
+    L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
+    focusZimbabwe(map);
+    requestAnimationFrame(() => map.invalidateSize());
 
     const json = async (url: string, options?: RequestInit) => {
       const response = await fetch(url, { ...options, signal: controller.signal });
@@ -357,46 +401,6 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
           transformers: transformers.length,
           routes: [...overheadRoutes, ...cableRoutes].reduce((total, feature) => total + Number(feature.properties?.segment_count || 1), 0),
         });
-
-        map = L.map(mapElementRef.current, {
-          zoomControl: true,
-          minZoom: 5,
-          maxZoom: 16,
-          zoomSnap: .25,
-          preferCanvas: true,
-        });
-        map.on('move zoom resize', positionAnalysisPopup);
-        window.addEventListener('resize', positionAnalysisPopup);
-        leafletMapRef.current = map;
-        map.createPane('windResource');
-        map.getPane('windResource')!.style.zIndex = '240';
-        map.createPane('regionalBoundaries');
-        map.getPane('regionalBoundaries')!.style.zIndex = '360';
-        map.createPane('gridRoutes');
-        map.getPane('gridRoutes')!.style.zIndex = '420';
-        map.createPane('gridAssets');
-        map.getPane('gridAssets')!.style.zIndex = '460';
-        map.createPane('liveWind');
-        map.getPane('liveWind')!.style.zIndex = '500';
-        map.createPane('windSites');
-        map.getPane('windSites')!.style.zIndex = '520';
-
-        const baseMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '© OpenStreetMap contributors',
-          maxZoom: 19,
-        }).addTo(map);
-
-        const windResource = L.tileLayer.wms(IRENA_WMS, {
-          layers: IRENA_LAYER,
-          styles: 'ku_wind_speed',
-          format: 'image/png',
-          transparent: true,
-          version: '1.1.1',
-          opacity: opacity / 100,
-          pane: 'windResource',
-          attribution: 'IRENA Global Atlas · Vortex wind resource',
-        }).addTo(map);
-        windLayerRef.current = windResource;
 
         const regionLayer = L.geoJSON(regions, {
           pane: 'regionalBoundaries',
@@ -510,9 +514,6 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
           stations: stationLayer,
           transformers: transformerLayer,
         };
-
-        L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
-        focusZimbabwe(map);
 
         const nearest = <T,>(items: T[], lat: (item: T) => number, lon: (item: T) => number, point: L.LatLng): { item: T; distance: number } | null => {
           let result: { item: T; distance: number } | null = null;
@@ -649,7 +650,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
       mapLayersRef.current = {};
       queryMarkerRef.current = null;
       leafletMapRef.current = null;
-      map?.remove();
+      map.remove();
     };
   }, [token]);
 

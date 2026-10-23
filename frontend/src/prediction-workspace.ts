@@ -52,15 +52,21 @@ type ModelDiagnostic = {
   regression_mae: number | null;
   validation_days: number;
   training_days: number;
+  forecast_method?: 'mast_live_calibrated' | 'open_meteo_direct';
+  provider_days?: number;
+  calibration_days?: number;
+  live_bias_mps?: number;
+  provider_mae?: number | null;
 };
 
 type ForecastResponse = {
   model_version: string;
+  forecast_method?: string;
   model_basis: string;
   backtest_mae: number | null;
   validation: {strategy: string; metric?: string; interval_basis?: string; regression_sites: number; baseline_sites: number};
   models_by_turbine: Record<string, ModelDiagnostic & {metrics?: {wind_speed: ModelDiagnostic; air_density: ModelDiagnostic}}>;
-  training: {latest_observation: string; forecast_start: string; daily_site_records: number; wind_points: number};
+  training: {latest_observation: string; forecast_start: string; daily_site_records: number; wind_points: number; provider_forecast_days?: number; live_history_days?: number};
   data: ForecastRow[];
   by_turbine: Record<string, ForecastRow[]>;
 };
@@ -135,7 +141,11 @@ const enhance = async () => {
     };
     const rows = () => allRows().slice(0, state.horizon);
     const scopeName = () => selectedAsset()?.name || 'All eight wind points';
-    const modelName = (value?: string) => value === 'autoregressive_regression' ? 'Autoregressive regression' : 'Statistical baseline';
+    const modelName = (diagnostic?: ModelDiagnostic) => {
+      if (diagnostic?.forecast_method === 'mast_live_calibrated') return 'Live-calibrated mast hybrid';
+      if (diagnostic?.forecast_method === 'open_meteo_direct') return 'Open-Meteo direct + adaptive';
+      return diagnostic?.selected_model === 'autoregressive_regression' ? 'Autoregressive regression' : 'Statistical baseline';
+    };
     const diagnosticForMetric = (diagnostic?: ModelDiagnostic & {metrics?: {wind_speed: ModelDiagnostic; air_density: ModelDiagnostic}}) =>
       state.metric === 'density' ? diagnostic?.metrics?.air_density || diagnostic : diagnostic?.metrics?.wind_speed || diagnostic;
     const modelSummary = () => {
@@ -144,7 +154,11 @@ const enhance = async () => {
       const siteModel = state.scope === 'fleet' ? undefined : diagnosticForMetric(prediction.models_by_turbine?.[state.scope]);
       const fleetModels = Object.values(prediction.models_by_turbine || {}).map(diagnosticForMetric).filter((model): model is ModelDiagnostic => Boolean(model));
       return siteModel
-        ? `${modelName(siteModel.selected_model)} · ${siteModel.selection_reason}`
+        ? siteModel.forecast_method
+          ? `${modelName(siteModel)} · ${siteModel.provider_days || 0} direct provider days${siteModel.calibration_days ? ` · ${siteModel.calibration_days} calibration days` : ''}`
+          : `${modelName(siteModel)} · ${siteModel.selection_reason}`
+        : prediction.forecast_method
+          ? `${prediction.forecast_method} · ${prediction.training.provider_forecast_days || 0} direct provider days`
         : `${fleetModels.filter(model => model.selected_model === 'autoregressive_regression').length} regression · ${fleetModels.filter(model => model.selected_model === 'statistical_baseline').length} baseline`;
     };
     const selectedModelMae = () => {
@@ -154,6 +168,7 @@ const enhance = async () => {
         : [diagnosticForMetric(activePrediction().models_by_turbine?.[state.scope])];
       const maes = diagnostics.flatMap(model => {
         if (!model) return [];
+        if (model.provider_mae != null) return [model.provider_mae];
         const value = model.selected_model === 'autoregressive_regression' ? model.regression_mae : model.baseline_mae;
         return value == null ? [] : [value];
       });
@@ -415,7 +430,7 @@ const enhance = async () => {
           forecastDensity: average(siteRows.map(row => row.air_density)),
           forecastLower: average(siteRows.map(row => row.lower)),
           forecastUpper: average(siteRows.map(row => row.upper)),
-          forecastModel: state.source === 'difference' ? 'Comparison' : modelName(siteModel?.selected_model),
+          forecastModel: state.source === 'difference' ? 'Comparison' : modelName(siteModel),
         };
       });
 
@@ -424,9 +439,10 @@ const enhance = async () => {
       const backtestDisplay = backtestValue == null ? 'Not yet validated' : `${fmt(backtestValue, state.metric === 'density' ? 4 : 3)} ${backtestUnit}`;
 
       host!.classList.remove('loading');
-      host!.innerHTML = `<div class="page-title prediction-heading"><div><p class="eyebrow">VALIDATED ADAPTIVE FORECAST</p><h1>Wind resource predictions</h1><p>${scopeName()} · ${sourceLabel()}</p></div><div class="prediction-action-row"><button type="button" class="prediction-daily" aria-haspopup="dialog">View daily predictions</button><button type="button" class="prediction-save">Save</button><div class="prediction-export-control"><label><span>Export format</span><select class="prediction-export-format"><option value="pdf" ${state.exportFormat === 'pdf' ? 'selected' : ''}>PDF report</option><option value="csv" ${state.exportFormat === 'csv' ? 'selected' : ''}>CSV data</option></select></label><button type="button" class="prediction-export">Export report</button></div></div></div><section class="prediction-disclaimer"><b>MODEL SELECTION: ${modelSummary()}</b><span>${activePrediction().model_basis}. Planning ranges use source observations and validated mean-forecast error.</span></section><section class="prediction-controls"><label>Data source<select class="prediction-source"><option value="zetdc" ${state.source === 'zetdc' ? 'selected' : ''}>ZETDC Wind Mast data</option><option value="live" ${state.source === 'live' ? 'selected' : ''}>Live Wind Maps Data</option><option value="difference" ${state.source === 'difference' ? 'selected' : ''}>Live minus ZETDC</option></select></label><label>Forecast horizon<select class="prediction-horizon"><option value="7" ${state.horizon === 7 ? 'selected' : ''}>7 days</option><option value="30" ${state.horizon === 30 ? 'selected' : ''}>30 days</option><option value="90" ${state.horizon === 90 ? 'selected' : ''}>90 days</option><option value="180" ${state.horizon === 180 ? 'selected' : ''}>Six months</option></select></label><label>Forecast measure<select class="prediction-metric"><option value="wind" ${state.metric === 'wind' ? 'selected' : ''}>Mean wind speed</option><option value="density" ${state.metric === 'density' ? 'selected' : ''}>Air density</option></select></label><label>Wind-point scope<select class="prediction-scope"><option value="fleet">All eight wind points</option>${mastAssets.map(asset => `<option value="${asset.id}" ${state.scope === String(asset.id) ? 'selected' : ''}>${asset.name}</option>`).join('')}</select></label></section><section class="prediction-kpis"><article><div class="prediction-symbol">W</div><div><small>Forecast wind</small><strong>${fmt(wind, 2)} m/s</strong><em>${state.horizon}-day mean</em></div></article><article><div class="prediction-symbol revenue">↕</div><div><small>Planning range</small><strong>${fmt(lowerWind, 2)}–${fmt(upperWind, 2)} m/s</strong><em>90% interval including model error</em></div></article><article><div class="prediction-symbol health">ρ</div><div><small>Forecast air density</small><strong>${fmt(density, 4)} kg/m3</strong><em>${state.horizon}-day mean</em></div></article><article><div class="prediction-symbol danger">±</div><div><small>Selected-model MAE</small><strong>${backtestDisplay}</strong><em>${activePrediction().training.daily_site_records} daily site records</em></div></article></section><section class="prediction-panel forecast-panel"><div class="section-heading"><div><p class="eyebrow">${meta.heading} FORECAST</p><h3>${scopeName()}</h3></div><span>Hover a date for forecast values</span></div><div class="forecast-bars">${bars}</div><div class="forecast-hover-card"></div><div class="forecast-scale"><span>${state.metric === 'wind' ? 'Lower planning bound' : meta.label}</span><b>${windowRows[0]?.date || '—'} to ${windowRows[windowRows.length - 1]?.date || '—'}</b><span>${state.metric === 'wind' ? 'Upper planning bound' : meta.unit}</span></div></section><section class="table-panel prediction-table"><div class="section-heading"><div><p class="eyebrow">EIGHT-SITE FORECAST REGISTER</p><h3>Forecasts trained and validated per wind point</h3></div><span>Latest observation ${activePrediction().training.latest_observation}</span></div><table><thead><tr><th>Wind point</th><th>Source folder</th><th>Logger</th><th>Selected model</th><th>Last measured wind</th><th>Forecast wind</th><th>Planning range</th><th>Air density</th></tr></thead><tbody>${pointRows.map(point => `<tr><td>${point.name}</td><td>${point.source_folder}</td><td>${point.source_id}</td><td>${point.forecastModel}</td><td>${fmt(point.average_wind_speed, 2)} m/s</td><td>${fmt(point.forecastWind, 2)} m/s</td><td>${fmt(point.forecastLower, 2)}–${fmt(point.forecastUpper, 2)} m/s</td><td>${fmt(point.forecastDensity, 4)} kg/m3</td></tr>`).join('')}</tbody></table></section>`;
+      host!.innerHTML = `<div class="page-title prediction-heading"><div><p class="eyebrow">VALIDATED ADAPTIVE FORECAST</p><h1>Wind resource predictions</h1><p>${scopeName()} · ${sourceLabel()}</p></div><div class="prediction-action-row"><button type="button" class="prediction-daily" aria-haspopup="dialog">View daily predictions</button><button type="button" class="prediction-save">Save</button><div class="prediction-export-control"><label><span>Export format</span><select class="prediction-export-format"><option value="pdf" ${state.exportFormat === 'pdf' ? 'selected' : ''}>PDF report</option><option value="csv" ${state.exportFormat === 'csv' ? 'selected' : ''}>CSV data</option></select></label><button type="button" class="prediction-export">Export report</button></div></div></div><section class="prediction-disclaimer"><b>MODEL SELECTION: ${modelSummary()}</b><span>${activePrediction().model_basis}. Planning ranges use source observations and validated mean-forecast error.</span></section><section class="prediction-controls"><label>Data source<select class="prediction-source"><option value="zetdc" ${state.source === 'zetdc' ? 'selected' : ''}>ZETDC Wind Mast data</option><option value="live" ${state.source === 'live' ? 'selected' : ''}>Live Wind Maps Data</option><option value="difference" ${state.source === 'difference' ? 'selected' : ''}>Live minus ZETDC</option></select></label><label>Forecast horizon<select class="prediction-horizon"><option value="7" ${state.horizon === 7 ? 'selected' : ''}>7 days</option><option value="30" ${state.horizon === 30 ? 'selected' : ''}>30 days</option><option value="90" ${state.horizon === 90 ? 'selected' : ''}>90 days</option><option value="180" ${state.horizon === 180 ? 'selected' : ''}>Six months</option></select></label><label>Forecast measure<select class="prediction-metric"><option value="wind" ${state.metric === 'wind' ? 'selected' : ''}>Mean wind speed</option><option value="density" ${state.metric === 'density' ? 'selected' : ''}>Air density</option></select></label><label>Wind-point scope<select class="prediction-scope"><option value="fleet">All eight wind points</option>${mastAssets.map(asset => `<option value="${asset.id}" ${state.scope === String(asset.id) ? 'selected' : ''}>${asset.name}</option>`).join('')}</select></label></section><section class="prediction-kpis"><article><div class="prediction-symbol">W</div><div><small>Forecast wind</small><strong>${fmt(wind, 2)} m/s</strong><em>${state.horizon}-day mean</em></div></article><article><div class="prediction-symbol revenue">↕</div><div><small>Planning range</small><strong>${fmt(lowerWind, 2)}–${fmt(upperWind, 2)} m/s</strong><em>90% interval including model error</em></div></article><article><div class="prediction-symbol health">ρ</div><div><small>Forecast air density</small><strong>${fmt(density, 4)} kg/m3</strong><em>${state.horizon}-day mean</em></div></article><article><div class="prediction-symbol danger">±</div><div><small>Selected-model MAE</small><strong>${backtestDisplay}</strong><em>${activePrediction().training.daily_site_records} daily site records</em></div></article></section><section class="prediction-panel forecast-panel"><div class="section-heading"><div><p class="eyebrow">${meta.heading} FORECAST</p><h3>${scopeName()}</h3></div><span>Hover a date for forecast values</span></div><div class="forecast-bars">${bars}</div><div class="forecast-hover-card"></div><div class="forecast-scale"><span>${state.metric === 'wind' ? 'Lower planning bound' : meta.label}</span><b>${windowRows[0]?.date || '—'} to ${windowRows[windowRows.length - 1]?.date || '—'}</b><span>${state.metric === 'wind' ? 'Upper planning bound' : meta.unit}</span></div></section><section class="table-panel prediction-table"><div class="section-heading"><div><p class="eyebrow">EIGHT-SITE FORECAST REGISTER</p><h3>Forecasts trained and validated per wind point</h3></div><span>Latest observation ${activePrediction().training.latest_observation}</span></div><table><thead><tr><th>Wind point</th><th>Source folder</th><th>Logger</th><th>Selected model</th><th>${state.source === 'live' ? 'Recent live wind' : 'Last measured wind'}</th><th>Forecast wind</th><th>Planning range</th><th>Air density</th></tr></thead><tbody>${pointRows.map(point => `<tr><td>${point.name}</td><td>${point.source_folder}</td><td>${point.source_id}</td><td>${point.forecastModel}</td><td>${fmt(point.average_wind_speed, 2)} m/s</td><td>${fmt(point.forecastWind, 2)} m/s</td><td>${fmt(point.forecastLower, 2)}–${fmt(point.forecastUpper, 2)} m/s</td><td>${fmt(point.forecastDensity, 4)} kg/m3</td></tr>`).join('')}</tbody></table></section>`;
       host!.dataset.predictionEnhanced = 'true';
       bind();
+      window.dispatchEvent(new Event('zetdc:prediction-ready'));
     };
 
     const bind = () => {
@@ -465,6 +481,5 @@ document.addEventListener('click', event => {
 }, true);
 window.addEventListener('popstate', dispose);
 window.addEventListener('zetdc:route-ready', () => { dispose(); enhance().catch(() => undefined); });
-setInterval(() => { dispose(); enhance().catch(() => undefined); }, 5000);
 
 export {};

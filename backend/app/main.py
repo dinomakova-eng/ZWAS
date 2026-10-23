@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -13,9 +15,9 @@ from pydantic import BaseModel
 from .identity import authenticate_ec_number
 from .data import turbines, recent_readings, daily_summaries, daily_summaries_for, latest_reported_month, monthly_history, monthly_history_for, DATA_SOURCE, READINGS_BY_TURBINE
 from .environment_wind import build_environment_wind_summary
-from .forecasting import build_forecast
+from .forecasting import build_live_informed_forecast
 from .metrics import calculate_metrics
-from .open_meteo import collect_open_meteo, cached_open_meteo, current_month_period, live_readings, live_stations, summarize_province_period
+from .open_meteo import collect_open_meteo, cached_open_meteo, current_month_period, live_forecast_days, live_readings, live_stations, summarize_province_period
 from .osm import reverse_osm_location
 
 app = FastAPI(title="Zesa Wind Assessment System API")
@@ -23,6 +25,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http
 security = HTTPBearer()
 SECRET = os.getenv("JWT_SECRET", "development-secret-change-me")
 saved_reports = []
+live_refresh_lock = asyncio.Lock()
+last_forced_live_refresh: datetime | None = None
+LIVE_REFRESH_COOLDOWN = timedelta(seconds=30)
 admin_users = [
     {"ec_number": "ze9160517", "name": "Farai Makova", "email": "farai.makova@zetdc.co.zw", "phone": "+263 77 200 0182", "department": "Renewables Operations", "position": "System Administrator", "company": "ZESA", "role": "System Administrator", "status": "Active", "last_login": "Today, 08:31", "created_date": "2025-01-12"},
     {"ec_number": "EC-01477", "name": "Rudo Ncube", "email": "rudo.ncube@zetdc.co.zw", "phone": "+263 77 200 1477", "department": "Asset Performance", "position": "Data Analyst", "company": "ZESA", "role": "Data Analyst", "status": "Active", "last_login": "Yesterday, 16:12", "created_date": "2025-06-24"},
@@ -54,9 +59,21 @@ def _live_by_turbine():
     return grouped
 
 
+def _recent_rows_by_turbine(readings_by_turbine, days: int):
+    window = timedelta(days=max(1, min(days, 730)))
+    result = []
+    for rows in readings_by_turbine.values():
+        if not rows:
+            continue
+        latest = datetime.fromisoformat(rows[-1]["timestamp"])
+        cutoff = latest - window
+        result.extend(row for row in rows if datetime.fromisoformat(row["timestamp"]) >= cutoff)
+    return sorted(result, key=lambda item: (item["timestamp"], item["turbine_id"]))
+
+
 def _readings_for_source(source: str, days: int):
     if source == "live":
-        return _live_rows()
+        return _recent_rows_by_turbine(_live_by_turbine(), days)
     return recent_readings(days)
 
 
@@ -72,10 +89,32 @@ def _history_for_source(source: str):
     return monthly_history()
 
 
+async def _refresh_live_cache(force: bool) -> tuple[dict, bool]:
+    """Refresh the one shared cache, coalescing simultaneous global requests."""
+    global last_forced_live_refresh
+    async with live_refresh_lock:
+        now = datetime.now(timezone.utc)
+        should_force = force and (
+            last_forced_live_refresh is None
+            or now - last_forced_live_refresh >= LIVE_REFRESH_COOLDOWN
+        )
+        payload = await asyncio.to_thread(
+            collect_open_meteo,
+            turbines(),
+            current_month_period(),
+            should_force,
+        )
+        if should_force and not payload.get("refresh_error") and not payload.get("province_refresh_error"):
+            last_forced_live_refresh = now
+        return payload, should_force
+
+
 async def _daily_open_meteo_refresh():
+    first_run = True
     while True:
         try:
-            await asyncio.to_thread(collect_open_meteo, turbines(), current_month_period())
+            await _refresh_live_cache(first_run)
+            first_run = False
         except Exception:
             pass
         # Successful results are retained for the day. Hourly checks mean a
@@ -115,9 +154,39 @@ def login(payload: Login):
 def list_turbines(source: str = "zetdc", current=Depends(user)):
     return live_stations(turbines()) if source == "live" else turbines()
 @app.get("/live-wind")
-def live_wind(current=Depends(user)):
+def live_wind(include_readings: bool = False, current=Depends(user)):
     payload = cached_open_meteo(turbines())
-    return {"metadata": payload, "stations": live_stations(turbines()), "readings": _live_rows()}
+    metadata_keys = (
+        "source", "provider", "provider_url", "collected_for", "collected_at",
+        "observed_through", "history_days", "forecast_days", "stale",
+        "refresh_error", "province_refresh_error",
+    )
+    response = {
+        "metadata": {key: payload.get(key) for key in metadata_keys if payload.get(key) is not None},
+        "stations": live_stations(turbines(), payload),
+    }
+    if include_readings:
+        response["readings"] = live_readings(turbines(), payload)
+    return response
+@app.post("/live-wind/refresh")
+async def refresh_live_wind(current=Depends(user)):
+    try:
+        payload, fetched = await _refresh_live_cache(True)
+    except Exception as error:
+        raise HTTPException(502, "Live wind refresh failed; the last successful system snapshot is still available") from error
+    refresh_error = payload.get("refresh_error") or payload.get("province_refresh_error")
+    if refresh_error:
+        raise HTTPException(502, f"Live wind refresh failed: {refresh_error}")
+    return {
+        "status": "refreshed" if fetched else "current",
+        "global": True,
+        "provider": payload.get("provider", "Open-Meteo"),
+        "collected_for": payload.get("collected_for"),
+        "collected_at": payload.get("collected_at"),
+        "observed_through": payload.get("observed_through"),
+        "sites": len(payload.get("locations", [])),
+        "history_sites": len(payload.get("history_locations", [])),
+    }
 @app.get("/metrics")
 def metrics(source: str = "zetdc", current=Depends(user)):
     current_readings = _readings_for_source(source, 1)
@@ -182,9 +251,21 @@ def history(source: str = "zetdc", current=Depends(user)):
     return {**_history_for_source(source), "data_source": _source_meta(source)}
 @app.get("/predictions")
 def predictions(days: int = 30, source: str = "zetdc", current=Depends(user)):
-    rows_by_turbine = _live_by_turbine() if source == "live" else READINGS_BY_TURBINE
-    assets = live_stations(turbines()) if source == "live" else turbines()
-    return {**build_forecast(assets, rows_by_turbine, min(max(days, 1), 180)), "data_source": _source_meta(source)}
+    forecast_days = min(max(days, 1), 180)
+    mast_assets = turbines()
+    live_rows_by_turbine = _live_by_turbine()
+    provider_by_turbine = live_forecast_days(mast_assets)
+    rows_by_turbine = live_rows_by_turbine if source == "live" else READINGS_BY_TURBINE
+    assets = live_stations(mast_assets) if source == "live" else mast_assets
+    forecast = build_live_informed_forecast(
+        assets,
+        rows_by_turbine,
+        forecast_days,
+        provider_by_turbine,
+        live_rows_by_turbine,
+        "live" if source == "live" else "mast",
+    )
+    return {**forecast, "data_source": _source_meta(source)}
 
 @app.get("/environment/wind-resource")
 def environment_wind_resource(lat: float, lon: float, current=Depends(user)):

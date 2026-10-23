@@ -45,5 +45,5 @@ document.addEventListener('change',event=>{
   applyScopedAnalysis();
 },true);
 
-setInterval(applyScopedAnalysis,350);
+window.addEventListener('zetdc:prediction-ready', applyScopedAnalysis);
 export {};

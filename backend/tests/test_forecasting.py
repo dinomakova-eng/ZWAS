@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from app.data import READINGS_BY_TURBINE, turbines
-from app.forecasting import _select_model, build_forecast
+from app.forecasting import _select_model, build_forecast, build_live_informed_forecast
 
 
 def test_forecast_is_trained_from_all_eight_measured_points():
@@ -43,3 +43,47 @@ def test_short_history_uses_statistical_fallback():
 
     assert selection["selected_model"] == "statistical_baseline"
     assert selection["validation_days"] == 0
+
+
+def test_live_informed_mast_forecast_uses_daily_provider_variation_and_local_bias():
+    start = date.today() - timedelta(days=70)
+    mast_rows = []
+    live_rows = []
+    for index in range(70):
+        observed_on = start + timedelta(days=index)
+        live_wind = 3.0 + (index % 5) * 0.2
+        common = {
+            "turbine_id": 1,
+            "timestamp": f"{observed_on.isoformat()}T12:00:00+02:00",
+            "wind_speed_stddev": 0.4,
+        }
+        live_rows.append({**common, "wind_speed": live_wind, "air_density": 1.1})
+        mast_rows.append({**common, "wind_speed": live_wind + 1.0, "air_density": 1.2})
+
+    provider = [{
+        "date": (date.today() + timedelta(days=index)).isoformat(),
+        "wind_speed": wind,
+        "wind_speed_min": wind - 0.5,
+        "wind_speed_max": wind + 0.5,
+        "wind_speed_stddev": 0.4,
+        "air_density": 1.1,
+    } for index, wind in enumerate((3.0, 5.0, 4.0))]
+
+    forecast = build_live_informed_forecast(
+        [{"id": 1, "name": "Test mast"}],
+        {1: mast_rows},
+        10,
+        {1: provider},
+        {1: live_rows},
+        "mast",
+    )
+
+    direct = forecast["by_turbine"]["1"][:3]
+    assert [row["wind_speed"] for row in direct] == [4.0, 6.0, 5.0]
+    assert len({row["wind_speed"] for row in direct}) == 3
+    assert forecast["model_version"] == "live-informed-hybrid-3.0"
+    assert forecast["training"]["provider_forecast_days"] == 3
+    assert forecast["models_by_turbine"]["1"]["calibration_days"] == 70
+    assert forecast["models_by_turbine"]["1"]["live_bias_mps"] == 1.0
+    assert forecast["models_by_turbine"]["1"]["metrics"]["wind_speed"]["forecast_method"] == "mast_live_calibrated"
+    assert forecast["models_by_turbine"]["1"]["metrics"]["air_density"]["provider_mae"] == 0.0

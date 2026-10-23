@@ -154,6 +154,5 @@ const enhance = async () => {
 };
 
 window.addEventListener('zetdc:route-ready', () => { dispose(); enhance().catch(() => undefined); });
-setInterval(() => { dispose(); enhance().catch(() => undefined); }, 5000);
 
 export {};
