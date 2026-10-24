@@ -1,6 +1,6 @@
 # Wind Resource Assessment System
 
-Operational prototype for monitoring and analysing eight Zimbabwe wind-assessment points. The system combines imported ZETDC wind-mast observations with live Open-Meteo conditions, ZETDC GIS boundaries, grid infrastructure, reporting, and per-site forecasts.
+Operational prototype for monitoring and analysing eight Zimbabwe wind-assessment points. The system combines imported Wind Masts observations with live Open-Meteo conditions, ZETDC GIS boundaries, grid infrastructure, reporting, and per-site forecasts.
 
 The active system presents measured wind and environmental source metrics only. Formula-derived generation fields are not calculated or exposed. The former formula implementation is retained, dormant, in `backend/app/wind_energy.py` for possible later reactivation: `P = 0.5 × air density × swept area × wind speed³ × power coefficient × system efficiency`.
 
@@ -8,15 +8,15 @@ The active system presents measured wind and environmental source metrics only. 
 
 - Fleet overview with measured mean wind speed, minimum/maximum wind, wind direction, environmental, quality, and availability metrics.
 - Interactive ZETDC region, wind-point, and electricity-infrastructure maps.
-- Live 10 m Open-Meteo conditions alongside measured ZETDC mast data.
+- Live 10 m Open-Meteo conditions alongside measured Wind Masts data.
 - Historical monthly and daily drill-downs for both mast measurements and the accumulated live-model archive, with CSV/Excel sharing tools.
 - Filter-aware reports, advanced analytics, site comparisons, and PDF/CSV exports.
-- One-to-180-day forecasts for mean wind speed and air density. The first 16 days use the daily-refreshed Open-Meteo forecast; ZETDC mast forecasts correct that signal against overlapping local measurements. A season-aware, rolling-validated regression or statistical baseline extends longer horizons, and 90% wind planning intervals include source variability and validation error.
+- One-to-180-day forecasts for mean wind speed and air density. The first 16 days use the daily-refreshed Open-Meteo forecast; Wind Masts forecasts correct that signal against overlapping local measurements. A season-aware, rolling-validated regression or statistical baseline extends longer horizons, with source variability and validation error tracked internally.
 - Administrator views for source data, wind points, forecast provenance, and users.
 
 ## Current data snapshot
 
-`backend/data/wind_points.json.gz` contains 145,817 normalized observations from 1,098 CSV files across eight measured wind points. The combined archive runs from 18 August 2025 to 13 September 2026; each point has its own start and end date, so recent-data windows are calculated per point. Source wind speed is converted from centimetres per second to metres per second during import. The current normalized archive has interval mean/minimum/maximum wind but no interval variability channel. The backend derives wind variability internally for forecast planning ranges, and the importer retains a source variability channel when one is present in a future Windographer export.
+`backend/data/wind_points.json.gz` contains 145,817 normalized observations from 1,098 CSV files across eight measured wind points. The combined archive runs from 18 August 2025 to 13 September 2026; each point has its own start and end date, so recent-data windows are calculated per point. Source wind speed is converted from centimetres per second to metres per second during import. The current normalized archive has interval mean/minimum/maximum wind but no interval variability channel. The backend derives wind variability internally for forecast validation, and the importer retains a source variability channel when one is present in a future Windographer export.
 
 The active points are Chivui, Dave, Dickson, Dotito, Mangwe, Mt Darwin, Plumtree, and Vungui. Coordinates come from `backend/data/wind_sites.csv`, and region/district assignments come from the supplied ZETDC boundary data.
 

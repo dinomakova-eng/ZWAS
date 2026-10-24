@@ -15,7 +15,6 @@ const applyScopedAnalysis=()=>{
   const trend=values.length>1?((values[values.length-1]-values[0])/Math.max(.1,values[0]))*100:0;
   const narrations=[
     index===0?`Forecast mean trend is ${trend>=0?'rising':'falling'} ${Math.abs(trend).toFixed(0)}% across the selected window.`:`Scoped to ${name}; the selected measure is ${trend>=0?'rising':'falling'} across the forecast dates.`,
-    index===0?'The 90% planning range combines source observations with model validation error.':`The ${name} planning range combines source observations with validation error.`,
     index===0?'Air density is forecast from the measured environmental record.':`${name}'s air density is forecast from its measured environmental record.`,
     index===0?'MAE reports validation error for the selected forecast measure.':`MAE reports validation error for ${name}.`,
   ];

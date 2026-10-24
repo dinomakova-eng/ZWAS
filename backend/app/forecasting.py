@@ -316,7 +316,7 @@ def build_forecast(turbines: list[dict], readings_by_turbine: dict[int, list[dic
         "validation": {
             "strategy": "per-site rolling-origin validation",
             "metric": "mean absolute error (m/s)",
-            "interval_basis": "90% planning interval combines source-observation spread with validated mean-forecast MAE",
+            "interval_basis": "uncertainty combines source-observation spread with validated mean-forecast MAE",
             "regression_sites": sum(model["selected_model"] == "autoregressive_regression" for model in models_by_turbine.values()),
             "baseline_sites": sum(model["selected_model"] == "statistical_baseline" for model in models_by_turbine.values()),
         },
@@ -531,12 +531,12 @@ def build_live_informed_forecast(
     forecast["data"] = _fleet_from_sites(hybrid_by_turbine, days)
     forecast["model_version"] = "live-informed-hybrid-3.0"
     forecast["forecast_method"] = (
-        "ZETDC mast-calibrated Open-Meteo forecast with seasonal extension"
+        "Open-Meteo forecast calibrated with Wind Masts and seasonal extension"
         if source_mode == "mast"
         else "Open-Meteo direct forecast with seasonal adaptive extension"
     )
     forecast["model_basis"] = (
-        "direct daily live forecasts are bias-corrected against overlapping ZETDC mast observations; "
+        "direct daily live forecasts are bias-corrected against overlapping Wind Masts observations; "
         "the validated seasonal model extends beyond the provider horizon"
         if source_mode == "mast"
         else "daily refreshed Open-Meteo forecasts are used directly for the provider horizon; "

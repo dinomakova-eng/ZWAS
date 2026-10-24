@@ -44,7 +44,7 @@ def _source_meta(source: str):
         }
     return {
         "source": "zetdc_mast",
-        "label": "ZETDC Wind Mast data",
+        "label": "Wind Masts",
         "provider": "ZETDC",
     }
 

@@ -1,8 +1,10 @@
 const API = '/api';
-const CACHE_MS = 60_000;
+const CACHE_MS = 10 * 60_000;
+const RESOURCE_CACHE_MS = 60 * 60_000;
 
 type CacheEntry = {expires: number; promise: Promise<unknown>};
 const cache = new Map<string, CacheEntry>();
+const resourceCache = new Map<string, CacheEntry>();
 
 export type LiveRefreshResult = {
   status: 'refreshed' | 'current';
@@ -29,6 +31,20 @@ export const getApiData = <T>(path: string, token: string, maxAge = CACHE_MS): P
     throw error;
   });
   cache.set(key, {expires: Date.now() + maxAge, promise});
+  return promise;
+};
+
+export const getJsonResource = <T>(url: string, maxAge = RESOURCE_CACHE_MS): Promise<T> => {
+  const existing = resourceCache.get(url);
+  if (existing && existing.expires > Date.now()) return existing.promise as Promise<T>;
+  const promise = fetch(url).then(response => {
+    if (!response.ok) throw new Error(`Resource request failed: ${response.status}`);
+    return response.json() as Promise<T>;
+  }).catch(error => {
+    resourceCache.delete(url);
+    throw error;
+  });
+  resourceCache.set(url, {expires: Date.now() + maxAge, promise});
   return promise;
 };
 

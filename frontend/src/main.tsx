@@ -41,7 +41,7 @@ import './default-report-detail.css';
 import './custom-report-selector.css';
 import './compact-page-headers.css';
 import './environment-module.css';
-import {getApiData, clearApiCache, refreshLiveData} from './data-client';
+import {getApiData, getJsonResource, clearApiCache, refreshLiveData} from './data-client';
 import {navigateApp} from './navigation';
 import {EnvironmentModule} from './environment-module';
 const initOsmFleetMap = async (initialTurbines?: any[]) => {
@@ -54,7 +54,7 @@ const initOsmFleetMap = async (initialTurbines?: any[]) => {
         return;
     const { t } = JSON.parse(auth);
     const [regions, turbines] = await Promise.all([
-        fetch('/gis/zetdc-regions.geojson').then(response => response.json()),
+        getJsonResource<any>('/gis/zetdc-regions.geojson'),
         initialTurbines ? Promise.resolve(initialTurbines) : getApiData<any[]>('/turbines', t),
     ]);
     target.innerHTML = '';
@@ -154,7 +154,7 @@ const initOsmFleetMap = async (initialTurbines?: any[]) => {
         if (gridData) return gridData;
         gridLoading = true;
         updateGridControl();
-        gridData = await fetch('/gis/zesa-grid-infrastructure.geojson').then(response => response.json());
+        gridData = await getJsonResource<any>('/gis/zesa-grid-infrastructure.geojson');
         gridLoading = false;
         updateGridControl();
         return gridData;
@@ -293,7 +293,7 @@ const initLoginOsmMap = async () => {
     const target = document.querySelector<HTMLElement>('.login .zim-outline:not([data-osm-map])');
     if (!target)
         return;
-    const boundary = await fetch('/zimbabwe-osm-boundary.geojson').then(response => response.json());
+    const boundary = await getJsonResource<any>('/zimbabwe-osm-boundary.geojson');
     target.dataset.osmMap = 'true';
     target.innerHTML = '';
     const map = L.map(target, {
@@ -359,6 +359,53 @@ function AnimatedTurbineMark() {
         <div className="brand-turbine-rotor"><i/><i/><i/></div>
     </div>;
 }
+
+const workspaceModules = {
+    reports: () => import('./reports-workspace'),
+    predictions: () => import('./prediction-workspace'),
+    analytics: () => import('./business-intelligence'),
+    comparison: () => import('./comparison-workspace'),
+    admin: () => import('./admin-console'),
+};
+
+const persistentWorkspacePaths = new Set([
+    '/', '/environment', '/reports', '/reports/analytics', '/reports/compare', '/predictions', '/history', '/admin',
+]);
+
+const workspaceModuleByPath: Record<string, () => Promise<unknown>> = {
+    '/reports': workspaceModules.reports,
+    '/reports/analytics': workspaceModules.analytics,
+    '/reports/compare': workspaceModules.comparison,
+    '/predictions': workspaceModules.predictions,
+    '/admin': workspaceModules.admin,
+};
+
+const workspaceDataByPath: Record<string, string[]> = {
+    '/': ['/turbines', '/metrics', '/overview-summary'],
+    '/environment': ['/turbines', '/live-wind'],
+    '/reports': ['/turbines', '/analytics/daily?days=90', '/turbines?source=live', '/analytics/daily?days=90&source=live'],
+    '/reports/analytics': ['/turbines', '/analytics/daily?days=90', '/turbines?source=live', '/analytics/daily?days=90&source=live'],
+    '/reports/compare': ['/turbines', '/analytics/daily?days=90', '/analytics/daily?days=90&source=live'],
+    '/predictions': ['/predictions?days=180', '/turbines', '/predictions?days=180&source=live', '/turbines?source=live'],
+    '/history': ['/history', '/history?source=live'],
+    '/admin': ['/metrics', '/turbines', '/admin/users', '/predictions?days=30'],
+};
+
+const workspaceResourcesByPath: Record<string, string[]> = {
+    '/': ['/gis/zetdc-regions.geojson'],
+    '/environment': ['/gis/zetdc-regions.geojson'],
+    '/reports/analytics': ['/gis/zetdc-regions.geojson'],
+};
+
+const prefetchWorkspaceRoute = (path: string, token: string, includeLargeResources = false) => {
+    void workspaceModuleByPath[path]?.().catch(() => undefined);
+    workspaceDataByPath[path]?.forEach(endpoint => { void getApiData(endpoint, token).catch(() => undefined); });
+    workspaceResourcesByPath[path]?.forEach(resource => { void getJsonResource(resource).catch(() => undefined); });
+    if (includeLargeResources && path === '/environment') {
+        void getJsonResource('/gis/zesa-grid-infrastructure.geojson').catch(() => undefined);
+    }
+};
+
 function Layout({ user, token, onLogout }: {
     user: User;
     token: string;
@@ -367,6 +414,9 @@ function Layout({ user, token, onLogout }: {
     const location = useLocation();
     const [liveRevision, setLiveRevision] = useState(0);
     const [liveRefreshState, setLiveRefreshState] = useState<'refreshing' | 'current' | 'error'>('refreshing');
+    const [visitedWorkspaces, setVisitedWorkspaces] = useState<Set<string>>(() => new Set(
+        persistentWorkspacePaths.has(location.pathname) ? [location.pathname] : [],
+    ));
     const compactPageHeader = location.pathname.startsWith('/reports') || location.pathname === '/predictions' || location.pathname === '/environment';
     useEffect(() => {
         const started = () => setLiveRefreshState('refreshing');
@@ -385,14 +435,61 @@ function Layout({ user, token, onLogout }: {
             window.removeEventListener('zetdc:live-data-refresh-error', failed);
         };
     }, [token]);
-    useEffect(() => { window.dispatchEvent(new Event('zetdc:route-ready')); }, [location.pathname, liveRevision]);
+    useEffect(() => {
+        if (persistentWorkspacePaths.has(location.pathname)) {
+            setVisitedWorkspaces(current => {
+                if (current.has(location.pathname)) return current;
+                const updated = new Set(current);
+                updated.add(location.pathname);
+                return updated;
+            });
+        }
+        window.dispatchEvent(new Event('zetdc:route-ready'));
+        const frame = window.requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+        return () => window.cancelAnimationFrame(frame);
+    }, [location.pathname, liveRevision]);
+    useEffect(() => {
+        if (liveRefreshState === 'refreshing') return;
+        const paths = ['/environment', '/reports', '/predictions', '/history', '/reports/analytics', '/reports/compare'];
+        if (user.role === 'admin') paths.push('/admin');
+        const timers: number[] = [];
+        const requestIdle = (window as any).requestIdleCallback as ((callback: () => void, options?: {timeout: number}) => number) | undefined;
+        const cancelIdle = (window as any).cancelIdleCallback as ((handle: number) => void) | undefined;
+        const warmRoutes = () => paths.forEach((path, index) => {
+            timers.push(window.setTimeout(() => prefetchWorkspaceRoute(path, token), index * 450));
+        });
+        const idleHandle = requestIdle
+            ? requestIdle(warmRoutes, {timeout: 2500})
+            : window.setTimeout(warmRoutes, 800);
+        return () => {
+            if (requestIdle && cancelIdle) cancelIdle(idleHandle);
+            else window.clearTimeout(idleHandle);
+            timers.forEach(timer => window.clearTimeout(timer));
+        };
+    }, [liveRefreshState, token, user.role]);
+    const warmNavigation = (path: string) => ({
+        onMouseEnter: () => prefetchWorkspaceRoute(path, token, true),
+        onFocus: () => prefetchWorkspaceRoute(path, token, true),
+        onPointerDown: () => prefetchWorkspaceRoute(path, token, true),
+    });
+    const shouldMountWorkspace = (path: string) => location.pathname === path || visitedWorkspaces.has(path);
+    const workspaceVisibility = (path: string): React.CSSProperties => ({display: location.pathname === path ? 'contents' : 'none'});
     const liveStatus = liveRefreshState === 'refreshing'
         ? 'REFRESHING LIVE DATA'
         : liveRefreshState === 'error' ? 'CACHED LIVE DATA' : 'LIVE DATA CURRENT';
     return <div className="shell"><aside><div className="logo"><AnimatedTurbineMark/><b>Wind Resource</b><small>ASSESSMENT SYSTEM</small></div><nav>
-    <NavLink to="/"><LayoutDashboard /> Overview</NavLink><NavLink to="/environment"><MapPin /> Wind Map</NavLink><NavLink to="/reports"><BarChart3 /> Reports</NavLink><NavLink to="/predictions"><Sparkles /> Predictions</NavLink><NavLink to="/history"><HistoryIcon /> History</NavLink>{user.role === 'admin' && <NavLink to="/admin"><Settings /> Administration</NavLink>}
-  </nav><div className="sidebar-foot"><div className="user-avatar">{user.name.split(' ').map(x => x[0]).join('')}</div><div><strong>{user.name}</strong><small>{user.role} · {user.ec_number}</small></div><button aria-label="Sign out" title="Sign out" onClick={onLogout}><LogOut size={18}/></button></div></aside><section className={`workspace${compactPageHeader ? ' compact-page-header' : ''}`}><header><div><p className="eyebrow">NATIONAL RENEWABLES OPERATIONS</p><h2>Wind Resource Assessment System</h2></div><div className={`live ${liveRefreshState}`}><i /> {liveStatus} <span>8 WIND POINTS</span></div></header><Routes>
-    <Route path="/" element={<Dashboard key={liveRevision} token={token}/>}/><Route path="/environment" element={<EnvironmentModule key={liveRevision} token={token}/>}/><Route path="/summary/:focus" element={<SummaryDetail token={token} liveRevision={liveRevision}/>}/><Route path="/turbines/:id" element={<TurbineDetail token={token}/>}/><Route path="/reports" element={<ReportsWorkspace />}/><Route path="/reports/analytics" element={<Analytics />}/><Route path="/reports/compare" element={<Compare />}/><Route path="/predictions" element={<PredictionsWorkspace />}/><Route path="/history" element={<HistoryWorkspace token={token} liveRevision={liveRevision}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin key={liveRevision} token={token}/> : <Navigate to="/"/>}/>
+    <NavLink to="/" {...warmNavigation('/')}><LayoutDashboard /> Overview</NavLink><NavLink to="/environment" {...warmNavigation('/environment')}><MapPin /> Wind Map</NavLink><NavLink to="/reports" {...warmNavigation('/reports')}><BarChart3 /> Reports</NavLink><NavLink to="/predictions" {...warmNavigation('/predictions')}><Sparkles /> Predictions</NavLink><NavLink to="/history" {...warmNavigation('/history')}><HistoryIcon /> History</NavLink>{user.role === 'admin' && <NavLink to="/admin" {...warmNavigation('/admin')}><Settings /> Administration</NavLink>}
+  </nav><div className="sidebar-foot"><div className="user-avatar">{user.name.split(' ').map(x => x[0]).join('')}</div><div><strong>{user.name}</strong><small>{user.role} · {user.ec_number}</small></div><button aria-label="Sign out" title="Sign out" onClick={onLogout}><LogOut size={18}/></button></div></aside><section className={`workspace${compactPageHeader ? ' compact-page-header' : ''}`}><header><div><p className="eyebrow">NATIONAL RENEWABLES OPERATIONS</p><h2>Wind Resource Assessment System</h2></div><div className={`live ${liveRefreshState}`}><i /> {liveStatus} <span>8 WIND POINTS</span></div></header>
+    {shouldMountWorkspace('/') && <div style={workspaceVisibility('/')}><Dashboard key={liveRevision} token={token}/></div>}
+    {shouldMountWorkspace('/environment') && <div style={workspaceVisibility('/environment')}><EnvironmentModule key={liveRevision} token={token}/></div>}
+    {shouldMountWorkspace('/reports') && <div style={workspaceVisibility('/reports')}><ReportsWorkspace /></div>}
+    {shouldMountWorkspace('/reports/analytics') && <div style={workspaceVisibility('/reports/analytics')}><Analytics /></div>}
+    {shouldMountWorkspace('/reports/compare') && <div style={workspaceVisibility('/reports/compare')}><Compare /></div>}
+    {shouldMountWorkspace('/predictions') && <div style={workspaceVisibility('/predictions')}><PredictionsWorkspace /></div>}
+    {shouldMountWorkspace('/history') && <div style={workspaceVisibility('/history')}><HistoryWorkspace key={liveRevision} token={token} liveRevision={liveRevision}/></div>}
+    {user.role === 'admin' && shouldMountWorkspace('/admin') && <div style={workspaceVisibility('/admin')}><Admin key={liveRevision} token={token}/></div>}
+    <Routes>
+    <Route path="/" element={null}/><Route path="/environment" element={null}/><Route path="/summary/:focus" element={<SummaryDetail token={token} liveRevision={liveRevision}/>}/><Route path="/turbines/:id" element={<TurbineDetail token={token}/>}/><Route path="/reports" element={null}/><Route path="/reports/analytics" element={null}/><Route path="/reports/compare" element={null}/><Route path="/predictions" element={null}/><Route path="/history" element={null}/><Route path="/admin" element={user.role === 'admin' ? null : <Navigate to="/"/>}/>
   </Routes></section></div>;
 }
 function Dashboard({ token }: {
@@ -624,7 +721,7 @@ function SummaryDetail({ token, liveRevision }: { token: string; liveRevision: n
     const labels: Record<string, [string, string]> = {
         fleet: ['Wind assessment points', `All ${assets.length} measured points and their current logger state`],
         range: ['Measured wind range', 'Source minimum and maximum wind speeds across the active reporting window'],
-        wind: ['Fleet wind speed', `ZETDC mast average for the latest reported month · ${mastMonthLabel}`],
+        wind: ['Fleet wind speed', `Wind Masts average for the latest reported month · ${mastMonthLabel}`],
         availability: ['Data availability summary', 'Valid logger samples across all wind points'],
         'live-wind': ['Live wind speed', `Current live-model readings for ${liveMonthLabel} · month to date`],
     };
@@ -687,12 +784,14 @@ const historyExportColumns = [
     ['Measurements', (day: any) => day.records],
 ] as const;
 
-const historyDelimitedData = (days: any[], separator: string) => {
+const historyDelimitedData = (days: any[], separator: string, sourceLabel: string) => {
     const escapeValue = (value: any) => {
         const valueText = value == null ? '' : String(value);
         return separator === ',' && /[",\r\n]/.test(valueText) ? `"${valueText.replace(/"/g, '""')}"` : valueText;
     };
     return [
+        ['Data source', sourceLabel].map(escapeValue).join(separator),
+        '',
         historyExportColumns.map(([label]) => escapeValue(label)).join(separator),
         ...days.map(day => historyExportColumns.map(([, value]) => escapeValue(value(day))).join(separator)),
     ].join('\r\n');
@@ -712,12 +811,13 @@ const downloadHistoryFile = (contents: string, filename: string, type = 'text/cs
 const escapeHistoryXml = (value: any) => String(value ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-const historyExcelWorkbook = (worksheets: { name: string; rows: any[] }[]) => {
+const historyExcelWorkbook = (worksheets: { name: string; rows: any[] }[], sourceLabel: string) => {
     const worksheetXml = worksheets.map(sheet => {
         const name = sheet.name.replace(/[\\/:?*\[\]]/g, ' ').slice(0, 31) || 'Wind point';
+        const source = `<Row><Cell ss:StyleID="Header"><Data ss:Type="String">Data source</Data></Cell><Cell><Data ss:Type="String">${escapeHistoryXml(sourceLabel)}</Data></Cell></Row><Row/>`;
         const header = `<Row>${historyExportColumns.map(([label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeHistoryXml(label)}</Data></Cell>`).join('')}</Row>`;
         const rows = sheet.rows.map(row => `<Row>${historyExportColumns.map(([, value]) => { const cell = value(row); const type = typeof cell === 'number' ? 'Number' : 'String'; return `<Cell><Data ss:Type="${type}">${escapeHistoryXml(cell)}</Data></Cell>`; }).join('')}</Row>`).join('');
-        return `<Worksheet ss:Name="${escapeHistoryXml(name)}"><Table>${header}${rows}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane></WorksheetOptions></Worksheet>`;
+        return `<Worksheet ss:Name="${escapeHistoryXml(name)}"><Table>${source}${header}${rows}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>3</SplitHorizontal><TopRowBottomPane>3</TopRowBottomPane></WorksheetOptions></Worksheet>`;
     }).join('');
     return `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel"><Styles><Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#DFF2FF" ss:Pattern="Solid"/></Style></Styles>${worksheetXml}</Workbook>`;
 };
@@ -795,11 +895,11 @@ function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision
                 }),
             };
         });
-        return {...mast, years: sortedYears(months), months, data_source: {label: 'Live minus ZETDC Wind Mast data'}};
+        return {...mast, years: sortedYears(months), months, data_source: {label: 'Live minus Wind Masts'}};
     };
     const sortedYears = (months: any[]) => [...new Set(months.map((item: any) => item.year))].sort();
     const history = sourceMode === 'live' && histories.live ? histories.live : sourceMode === 'difference' && histories.live ? differenceHistory(histories.live, histories.zetdc) : histories.zetdc;
-    const sourceLabel = sourceMode === 'live' ? 'Live Wind Maps Data' : sourceMode === 'difference' ? 'Live minus ZETDC Wind Mast data' : 'ZETDC Wind Mast data';
+    const sourceLabel = sourceMode === 'live' ? 'Live Wind Maps Data' : sourceMode === 'difference' ? 'Live minus Wind Masts' : 'Wind Masts';
     const metrics = history.metrics.map((item: any) => ({ ...item, color: historyMetricColors[item.key] || '#087fc3' }));
     const metric = metrics.find((item: any) => item.key === metricKey) || metrics[0];
     const windPoints = history.wind_points || [];
@@ -851,9 +951,9 @@ function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision
     const dailyChart = selectedDays.map((day: any) => ({ date: day.date, day: String(day.day).padStart(2, '0'), value: day.metrics[metricKey] })).filter((day: any) => day.value != null);
     const exportScope = registerScopeName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const exportFilename = selected ? `daily-measurement-register-${exportScope}-${selected.year}-${String(selected.month).padStart(2, '0')}.csv` : '';
-    const csvData = selected ? historyDelimitedData(registerDays, ',') : '';
-    const tsvData = selected ? historyDelimitedData(registerDays, '\t') : '';
-    const reportTitle = selected ? `Daily measurement register — ${registerScopeName} — ${historyMonthNames[selected.month - 1]} ${selected.year}` : '';
+    const csvData = selected ? historyDelimitedData(registerDays, ',', sourceLabel) : '';
+    const tsvData = selected ? historyDelimitedData(registerDays, '\t', sourceLabel) : '';
+    const reportTitle = selected ? `Daily measurement register — ${registerScopeName} — ${sourceLabel} — ${historyMonthNames[selected.month - 1]} ${selected.year}` : '';
     const copyData = async () => {
         try {
             let copied = false;
@@ -888,7 +988,7 @@ function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision
             rows: pointDailyRows(String(point.turbine_id)),
         }));
         const filename = `daily-measurement-register-${selected.year}-${String(selected.month).padStart(2, '0')}.xls`;
-        downloadHistoryFile(`\ufeff${historyExcelWorkbook(worksheets)}`, filename, 'application/vnd.ms-excel;charset=utf-8');
+        downloadHistoryFile(`\ufeff${historyExcelWorkbook(worksheets, sourceLabel)}`, filename, 'application/vnd.ms-excel;charset=utf-8');
         setExportStatus(`Exported ${worksheets.length} wind-point worksheets to ${filename}.`);
     };
     const emailData = () => {
@@ -929,7 +1029,7 @@ function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision
     return <main className="content history-workspace">
         <div className="page-title history-title"><div><p className="eyebrow">MEASUREMENT ARCHIVE</p><h1>History</h1><p>Explore historical wind-point measurements by metric, year, and month.</p></div><span><i/> Data available</span></div>
 
-        <section className="history-step history-metric-step"><header><b>01</b><div><p className="eyebrow">METRIC</p><h2>Select a measurement</h2></div><label className="history-popup-scope history-page-scope"><span>Data source</span><select value={sourceMode} onChange={event => { setSourceMode(event.target.value as any); setMonth(null); }}><option value="zetdc">ZETDC Wind Mast data</option><option value="live" disabled={!histories.live}>Live Wind Maps Data</option><option value="difference" disabled={!histories.live}>Live minus ZETDC</option></select></label></header><div className="history-metric-grid">{metrics.map((item: any) => <button type="button" key={item.key} className={item.key === metricKey ? 'active' : ''} onClick={() => chooseMetric(item.key)}><i style={{ background: item.color }}/><span>{item.label}</span><small>{item.unit}</small></button>)}</div></section>
+        <section className="history-step history-metric-step"><header><b>01</b><div><p className="eyebrow">METRIC</p><h2>Select a measurement</h2></div><label className="history-popup-scope history-page-scope"><span>Data source</span><select value={sourceMode} onChange={event => { setSourceMode(event.target.value as any); setMonth(null); }}><option value="zetdc">Wind Masts</option><option value="live" disabled={!histories.live}>Live Wind Maps Data</option><option value="difference" disabled={!histories.live}>Live minus Wind Masts</option></select></label></header><div className="history-metric-grid">{metrics.map((item: any) => <button type="button" key={item.key} className={item.key === metricKey ? 'active' : ''} onClick={() => chooseMetric(item.key)}><i style={{ background: item.color }}/><span>{item.label}</span><small>{item.unit}</small></button>)}</div></section>
 
         <div className="history-filter-row">
             <section className="history-step history-point-step"><header><b>02</b><div><p className="eyebrow">WIND POINT</p><h2>Choose measurement scope</h2></div></header><label className="history-popup-scope history-page-scope"><span>Wind point</span><select value={pointId} onChange={event => choosePoint(event.target.value)}><option value="all">All wind points</option>{windPoints.map((point: any) => <option key={point.turbine_id} value={String(point.turbine_id)}>{point.name}</option>)}</select></label></section>
@@ -942,14 +1042,6 @@ function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision
         {selected ? <div className="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-dialog-title"><section className="history-detail"><header><div><p className="eyebrow">DAILY HISTORY DRILL-DOWN</p><h2 id="history-dialog-title">{historyMonthNames[selected.month - 1]} {selected.year}</h2><span>{metric.label} day by day · {scopeName}</span></div><div className="history-detail-heading-actions"><strong style={{ color: metric.color }}>{formatValue(selectedScope.metrics[metricKey])}</strong><button type="button" className="history-close" onClick={() => setMonth(null)} aria-label="Close daily history drill-down"><X/></button></div></header><div className="history-export-bar"><div className="history-export-intro"><b>Daily measurement register</b><span>Excel creates {registerPoints.length} wind-point worksheet tabs. Copy, email, and share use the active register tab.</span></div><label className="history-popup-scope"><span>Graph scope</span><select value={pointId} onChange={event => { const value = event.target.value; setPointId(value); if (value !== 'all') setRegisterPointId(value); setExportStatus(''); }}><option value="all">All wind points</option>{selected.points.map((point: any) => <option key={point.turbine_id} value={String(point.turbine_id)}>{point.name}</option>)}</select></label><div className="history-export-actions"><button type="button" onClick={copyData}><Copy/>Copy active tab</button><button type="button" onClick={downloadExcel}><Download/>Export Excel</button><button type="button" onClick={emailData}><Mail/>Email active tab</button><button type="button" className="primary" onClick={shareData}><Share2/>Share / save</button></div>{exportStatus && <p className="history-export-status" role="status" aria-live="polite">{exportStatus}</p>}</div><div className="history-average-note"><b>{scopeName}</b><span>Metric figures in the summary cards reflect the selected month and wind-point scope. Measurement counts are monthly totals.</span></div><div className="history-detail-kpis"><article><small>Monthly result</small><strong>{formatValue(selectedScope.metrics[metricKey])}</strong><span>{metric.label} · {scopeName}</span></article><article><small>Measurements</small><strong>{selectedScope.records.toLocaleString()}</strong><span>{scopeName} monthly total</span></article><article><small>Reporting wind points</small><strong>{pointId === 'all' ? selected.wind_points : 1}</strong><span>{scopeName}</span></article></div><div className="history-chart"><div className="history-chart-heading"><div><p className="eyebrow">DAILY TREND</p><h3>{metric.label} by day · {scopeName}</h3></div><span>{dailyChart.length} recorded day{dailyChart.length === 1 ? '' : 's'}</span></div><ResponsiveContainer width="100%" height={270}><LineChart data={dailyChart} margin={{ top: 12, right: 18, left: 5, bottom: 5 }}><CartesianGrid stroke="#dceaf3" vertical={false}/><XAxis dataKey="day" tick={{ fontSize: 10 }}/><YAxis tick={{ fontSize: 10 }} unit={` ${metric.unit}`}/><Tooltip labelFormatter={(_, payload) => `${payload?.[0]?.payload?.date || ''} · ${scopeName}`} formatter={(value: number) => [formatValue(value), metric.label]}/><Line type="monotone" dataKey="value" name={`${metric.label} · ${scopeName}`} stroke={metric.color} strokeWidth={3} dot={{ r: 3, fill: '#fff', strokeWidth: 2 }} activeDot={{ r: 6 }}/></LineChart></ResponsiveContainer></div><div className="history-daily-table"><header><div><p className="eyebrow">DAY-BY-DAY RECORDING</p><h3>Daily measurement register</h3></div><span>{registerScopeName} · {registerDays.length} recorded days</span></header><div className="history-register-tabs" role="tablist" aria-label="Available wind points for the selected month and metric">{registerPoints.map((point: any) => { const tabId = String(point.turbine_id); const active = String(activeRegisterPoint?.turbine_id) === tabId; return <button type="button" role="tab" id={`history-register-tab-${tabId}`} aria-selected={active} key={tabId} className={active ? 'active' : ''} onClick={() => { setRegisterPointId(tabId); setExportStatus(''); }}><span>{point.name.replace(/ Wind Point$/i, '')}</span><small>{point.records.toLocaleString()} records</small></button>; })}</div><div role="tabpanel" aria-labelledby={`history-register-tab-${activeRegisterPoint?.turbine_id || ''}`}><table><thead><tr><th>Date</th><th>Average wind</th><th>Minimum wind</th><th>Maximum wind</th><th>Direction</th><th>Temperature</th><th>Humidity</th><th>Air pressure</th><th>Air density</th><th>Availability</th><th>Data quality</th><th>Measurements</th></tr></thead><tbody>{registerDays.map((day: any) => <tr key={day.date}><td><strong>{day.date}</strong></td><td>{formatMetricValue('wind_speed', day.metrics.wind_speed)}</td><td>{formatMetricValue('wind_speed_min', day.metrics.wind_speed_min)}</td><td>{formatMetricValue('wind_speed_max', day.metrics.wind_speed_max)}</td><td>{formatMetricValue('wind_direction', day.metrics.wind_direction)}</td><td>{formatMetricValue('temperature', day.metrics.temperature)}</td><td>{formatMetricValue('humidity', day.metrics.humidity)}</td><td>{formatMetricValue('air_pressure', day.metrics.air_pressure)}</td><td>{formatMetricValue('air_density', day.metrics.air_density)}</td><td>{formatMetricValue('availability_pct', day.metrics.availability_pct)}</td><td>{formatMetricValue('data_quality_pct', day.metrics.data_quality_pct)}</td><td>{day.records.toLocaleString()}</td></tr>)}</tbody></table></div></div></section></div> : <section className="history-empty"><HistoryIcon/><h2>Select a month to view its daily history</h2><p>Choose a green month to open the {scopeName} full-page measurement register.</p></section>}
     </main>;
 }
-
-const workspaceModules = {
-    reports: () => import('./reports-workspace'),
-    predictions: () => import('./prediction-workspace'),
-    analytics: () => import('./business-intelligence'),
-    comparison: () => import('./comparison-workspace'),
-    admin: () => import('./admin-console'),
-};
 
 function useWorkspaceModule(load: () => Promise<unknown>) {
     useEffect(() => {

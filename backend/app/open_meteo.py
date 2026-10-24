@@ -1,4 +1,4 @@
-"""Open-Meteo live wind cache kept separate from ZETDC mast observations."""
+"""Open-Meteo live wind cache kept separate from Wind Masts observations."""
 
 from __future__ import annotations
 

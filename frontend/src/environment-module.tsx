@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
+import {getApiData, getJsonResource} from './data-client';
 
 const IRENA_WMS = 'https://irena-ga.azurewebsites.net/geoserver/wms';
 const IRENA_LAYER = 'vortex:M.100.year';
@@ -129,7 +130,7 @@ type LayerKey = 'annualWind' | 'liveWind' | 'mastWind' | 'regions' | 'overhead' 
 const layerLabels: Array<{ key: LayerKey; label: string; className: string }> = [
   { key: 'annualWind', label: 'IRENA annual wind · 100 m', className: 'wind' },
   { key: 'liveWind', label: 'Live wind conditions · 10 m', className: 'live-wind' },
-  { key: 'mastWind', label: 'Latest ZESA mast observations', className: 'mast-wind' },
+  { key: 'mastWind', label: 'Wind Masts', className: 'mast-wind' },
   { key: 'regions', label: 'ZETDC regional boundaries', className: 'regions' },
   { key: 'overhead', label: 'ZESA overhead lines · 11/33/88–330 kV', className: 'overhead voltage-lines' },
   { key: 'cables', label: 'ZESA underground cables', className: 'cable' },
@@ -225,7 +226,7 @@ const windAnalysisPopup = (
       <span><small>Nearest substation</small><b>${safeText(gridContext.nearestSubstation?.name || 'Not available')}</b>${gridContext.nearestSubstation ? `<em>${distanceLabel(gridContext.nearestSubstation.distance)}</em>` : ''}</span>
       <span><small>Nearest transformer</small><b>${safeText(gridContext.nearestTransformer?.name || 'Not available')}</b>${gridContext.nearestTransformer ? `<em>${distanceLabel(gridContext.nearestTransformer.distance)}</em>` : ''}</span>
     </div>
-    ${summary ? `<div class="environment-wind-daily-layout"><section><div class="environment-wind-section-title"><b>Previous 7 source days</b><span>daily avg · min–max m/s</span></div><div class="environment-observed-table"><div class="environment-observed-row heading"><b>Day</b><span>Live 10 m</span><span>ZESA mast</span></div>${observedDailyRows(summary)}</div></section><section><div class="environment-wind-section-title"><b>Next 7 days</b><span>best estimate · m/s</span></div><div class="environment-forecast-table"><div class="environment-forecast-row heading"><b>Date</b><span>Avg</span><span>Min</span><span>Max</span></div>${forecastDailyRows(summary)}</div></section></div><footer>${safeText(methodLabel)}</footer>` : pending ? '<div class="environment-wind-loading"><i></i><span>Preparing observed and forecast wind…</span></div>' : '<div class="environment-wind-loading unavailable"><span>Seven-day wind analysis is temporarily unavailable.</span></div>'}
+    ${summary ? `<div class="environment-wind-daily-layout"><section><div class="environment-wind-section-title"><b>Previous 7 source days</b><span>daily avg · min–max m/s</span></div><div class="environment-observed-table"><div class="environment-observed-row heading"><b>Day</b><span>Live 10 m</span><span>Wind Masts</span></div>${observedDailyRows(summary)}</div></section><section><div class="environment-wind-section-title"><b>Next 7 days</b><span>best estimate · m/s</span></div><div class="environment-forecast-table"><div class="environment-forecast-row heading"><b>Date</b><span>Avg</span><span>Min</span><span>Max</span></div>${forecastDailyRows(summary)}</div></section></div><footer>${safeText(methodLabel)}</footer>` : pending ? '<div class="environment-wind-loading"><i></i><span>Preparing observed and forecast wind…</span></div>' : '<div class="environment-wind-loading unavailable"><span>Seven-day wind analysis is temporarily unavailable.</span></div>'}
   </div>`;
 };
 
@@ -268,18 +269,17 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
   const [opacity, setOpacity] = useState(68);
   const [layerVisibility, setLayerVisibility] = useState(initialLayerVisibility);
   const [copyStatus, setCopyStatus] = useState('');
-  const [status, setStatus] = useState('Loading annual, live, mast and ZESA spatial layers…');
+  const [status, setStatus] = useState('Loading annual, live, Wind Masts and ZESA spatial layers…');
   const [selection, setSelection] = useState<Selection>({
     label: 'MAP INSPECTOR',
     title: 'Explore Zimbabwe',
-    note: 'Select a live wind halo, ZESA mast, grid asset, or any location on the map.',
-    rows: [['Wind data', 'Live conditions, ZESA mast observations and IRENA annual mean'], ['Map interaction', 'Pan, zoom and inspect']],
+    note: 'Select a live wind halo, Wind Mast, grid asset, or any location on the map.',
+    rows: [['Wind data', 'Live conditions, Wind Masts and IRENA annual mean'], ['Map interaction', 'Pan, zoom and inspect']],
   });
 
   useEffect(() => {
     if (!mapElementRef.current) return;
 
-    const controller = new AbortController();
     let disposed = false;
     let inspectionSequence = 0;
     let analysisPoint: L.LatLng | null = null;
@@ -353,11 +353,9 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
     focusZimbabwe(map);
     requestAnimationFrame(() => map.invalidateSize());
 
-    const json = async (url: string, options?: RequestInit) => {
-      const response = await fetch(url, { ...options, signal: controller.signal });
-      if (!response.ok) throw new Error(`${url} returned ${response.status}`);
-      return response.json();
-    };
+    const json = <T,>(url: string): Promise<T> => url.startsWith('/api/')
+      ? getApiData<T>(url.slice(4), token)
+      : getJsonResource<T>(url);
 
     const featureCollection = (features: any[]): any => ({ type: 'FeatureCollection', features });
     const pointFeatures = (features: any[]) => featureCollection(features.map(feature => ({
@@ -380,8 +378,8 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
       try {
         const [regions, turbines, liveResponse] = await Promise.all([
           json('/gis/zetdc-regions.geojson'),
-          json('/api/turbines', { headers: { Authorization: `Bearer ${token}` } }),
-          json('/api/live-wind', { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
+          json('/api/turbines'),
+          json('/api/live-wind').catch(() => null),
         ]) as [any, Turbine[], LiveWindResponse | null];
         if (disposed || !mapElementRef.current) return;
 
@@ -497,7 +495,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
           });
           const wind = Number(turbine.latest_wind_speed || 0).toFixed(2);
           const marker = L.marker([turbine.lat, turbine.lon], { icon, pane: 'windSites', title: turbine.name });
-          marker.bindTooltip(`ZESA mast · ${turbine.name} · ${wind} m/s`, { direction: 'top' });
+          marker.bindTooltip(`Wind Masts · ${turbine.name} · ${wind} m/s`, { direction: 'top' });
           marker.on('click', () => inspectPoint(marker.getLatLng()));
           return marker;
         })).addTo(map);
@@ -579,9 +577,9 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
             nearby,
           });
           const [resourceResult, locationResult, windResult] = await Promise.allSettled([
-            json(`/api/environment/wind-resource?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`, { headers: { Authorization: `Bearer ${token}` } }),
-            json(`/api/environment/location?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`, { headers: { Authorization: `Bearer ${token}` } }),
-            json(`/api/environment/wind-summary?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`, { headers: { Authorization: `Bearer ${token}` } }),
+            json<{wind_speed_ms?: number}>(`/api/environment/wind-resource?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`),
+            json(`/api/environment/location?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`),
+            json(`/api/environment/wind-summary?lat=${point.lat.toFixed(5)}&lon=${point.lng.toFixed(5)}`),
           ]);
           if (disposed || inspectionId !== inspectionSequence) return;
 
@@ -599,7 +597,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
           ] : [['OpenStreetMap location', 'Not available']];
           const windRows: Array<[string, string]> = windSummary ? [
             ['Live · previous 7 days', windWindowLabel(windSummary.observed.live)],
-            ['ZESA mast · latest 7 days', windWindowLabel(windSummary.observed.mast)],
+            ['Wind Masts · latest 7 days', windWindowLabel(windSummary.observed.mast)],
             ['Best estimate · next 7 days', windWindowLabel(windSummary.forecast.blended)],
             ['Forecast blend', windSummary.method.live_available ? `${windSummary.method.live_weight_pct}% live model · ${windSummary.method.mast_weight_pct}% mast calibration` : 'Mast model fallback'],
           ] : [['Seven-day wind analysis', 'Temporarily unavailable']];
@@ -632,7 +630,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
         map.on('click', event => inspectPoint(event.latlng));
 
         setStatus(liveStations.length ? 'Annual, live and mast layers loaded · adding grid progressively' : 'Annual and mast layers loaded · adding grid progressively');
-        gridLoadPromise = json('/gis/zesa-grid-infrastructure.geojson').then(grid => {
+        gridLoadPromise = json<{features?: any[]}>('/gis/zesa-grid-infrastructure.geojson').then(grid => {
           if (disposed) return;
           const gridFeatures: any[] = grid.features || [];
           stations = gridFeatures.filter(feature => feature.properties?.asset_type === 'station');
@@ -665,7 +663,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
         });
         requestAnimationFrame(() => map?.invalidateSize());
       } catch (error) {
-        if (disposed || controller.signal.aborted) return;
+        if (disposed) return;
         setStatus('Wind Map layers could not be loaded');
         setSelection({ label: 'MAP STATUS', title: 'Layer loading failed', note: error instanceof Error ? error.message : 'The Wind Map is unavailable.', rows: [] });
       }
@@ -674,7 +672,6 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
     initialise();
     return () => {
       disposed = true;
-      controller.abort();
       window.removeEventListener('resize', positionAnalysisPopup);
       closeAnalysisPopup();
       windLayerRef.current = null;
@@ -728,12 +725,12 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
 
   return <main className="content environment-host">
     <div className="environment-heading">
-      <div><p className="eyebrow">WIND RESOURCE &amp; GRID INTELLIGENCE</p><h1>Zimbabwe Wind Map</h1><p>Live wind conditions and ZESA mast observations combined with annual resource and grid infrastructure.</p></div>
+      <div><p className="eyebrow">WIND RESOURCE &amp; GRID INTELLIGENCE</p><h1>Zimbabwe Wind Map</h1><p>Live wind conditions and Wind Mast observations combined with annual resource and grid infrastructure.</p></div>
       <a href="https://globalatlas.irena.org/" target="_blank" rel="noreferrer">Open IRENA Global Atlas ↗</a>
     </div>
 
     <section className="environment-kpis" aria-label="Wind Map layer totals">
-      <article><small>ZESA mast points</small><strong>{summary.mastPoints.toLocaleString()}</strong><span>Latest logger observations</span></article>
+      <article><small>Wind Masts</small><strong>{summary.mastPoints.toLocaleString()}</strong><span>Latest logger observations</span></article>
       <article><small>Live wind points</small><strong>{summary.livePoints.toLocaleString()}</strong><span>Current hourly conditions</span></article>
       <article><small>Substations &amp; stations</small><strong>{summary.stations.toLocaleString()}</strong><span>ZESA spatial register</span></article>
       <article><small>Transformers</small><strong>{summary.transformers.toLocaleString()}</strong><span>Mapped grid assets</span></article>
@@ -780,7 +777,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
         <div className="environment-symbols">
           <h3>Map symbols</h3>
           <span><i className="symbol live-wind"/>Live wind conditions (colour = speed)</span>
-          <span><i className="symbol turbine"/>ZESA mast observation</span>
+          <span><i className="symbol turbine"/>Wind Masts</span>
           <span><i className="symbol station"/>Substation / station</span>
           <span><i className="symbol transformer"/>Transformer</span>
           <span><i className="symbol overhead overhead-11"/>11 kV overhead lines</span>
@@ -793,6 +790,6 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
 
     <div ref={analysisPopupRef} className="environment-analysis-overlay" role="dialog" aria-live="polite" aria-label="Selected point wind analysis" hidden/>
 
-    <p className="environment-source-note"><b>Wind sources:</b> live 10 m hourly conditions from Open-Meteo, measured observations from ZESA wind masts, and the Vortex annual average at 100 m from the IRENA Global Atlas. Live/modelled and mast heights differ, so compare them as context rather than like-for-like measurements.</p>
+    <p className="environment-source-note"><b>Wind sources:</b> live 10 m hourly conditions from Open-Meteo, measured observations from Wind Masts, and the Vortex annual average at 100 m from the IRENA Global Atlas. Live/modelled and mast heights differ, so compare them as context rather than like-for-like measurements.</p>
   </main>;
 }
