@@ -52,7 +52,7 @@ export const refreshLiveData = (token: string, trigger: 'system_open' | 'manual'
     }
     return response.json() as Promise<LiveRefreshResult>;
   }).then(result => {
-    clearApiCache();
+    if (result.status === 'refreshed') clearApiCache();
     window.dispatchEvent(new CustomEvent('zetdc:live-data-refreshed', {detail: {...result, trigger}}));
     return result;
   }).catch(error => {

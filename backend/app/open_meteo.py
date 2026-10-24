@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import tempfile
 import urllib.parse
 import urllib.request
 from collections import defaultdict
@@ -70,9 +71,23 @@ def _read_cache() -> dict | None:
 
 def _write_cache(payload: dict) -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with CACHE_PATH.open("w", encoding="utf-8") as target:
-        json.dump(payload, target, separators=(",", ":"))
-    _read_cache_version.cache_clear()
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=CACHE_PATH.parent,
+            prefix=f".{CACHE_PATH.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as target:
+            json.dump(payload, target, separators=(",", ":"))
+            temporary_path = Path(target.name)
+        temporary_path.replace(CACHE_PATH)
+        _read_cache_version.cache_clear()
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _fetch_open_meteo(turbines: list[dict]) -> dict:

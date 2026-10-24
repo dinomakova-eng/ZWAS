@@ -1,4 +1,4 @@
-# ZETDC Wind Assessment System
+# Wind Resource Assessment System
 
 Operational prototype for monitoring and analysing eight Zimbabwe wind-assessment points. The system combines imported ZETDC wind-mast observations with live Open-Meteo conditions, ZETDC GIS boundaries, grid infrastructure, reporting, and per-site forecasts.
 

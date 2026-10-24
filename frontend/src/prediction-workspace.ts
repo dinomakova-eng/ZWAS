@@ -100,12 +100,16 @@ const enhance = async () => {
   host.dataset.predictionLoading = 'true';
   try {
     const headers = {Authorization: `Bearer ${auth.t}`};
-    const [mastPrediction, mastAssets, livePrediction, liveAssets]: [ForecastResponse, Asset[], ForecastResponse | null, Asset[]] = await Promise.all([
-      getApiData<ForecastResponse>('/predictions?days=180', auth.t),
-      getApiData<Asset[]>('/turbines', auth.t),
+    const liveDataPromise = Promise.all([
       getApiData<ForecastResponse>('/predictions?days=180&source=live', auth.t).catch(() => null),
       getApiData<Asset[]>('/turbines?source=live', auth.t).catch(() => [] as Asset[]),
     ]);
+    const [mastPrediction, mastAssets]: [ForecastResponse, Asset[]] = await Promise.all([
+      getApiData<ForecastResponse>('/predictions?days=180', auth.t),
+      getApiData<Asset[]>('/turbines', auth.t),
+    ]);
+    let livePrediction: ForecastResponse | null = null;
+    let liveAssets: Asset[] = [];
     if (window.location.pathname !== '/predictions') return;
 
     const state: {scope: string; horizon: number; metric: PredictionMetric; source: SourceMode; exportFormat: 'pdf' | 'csv'} = {
@@ -238,7 +242,7 @@ const enhance = async () => {
     const exportCsv = () => {
       const prediction = activePrediction();
       const metadata = [
-        ['ZETDC Wind Assessment System', 'Prediction report'],
+        ['Wind Resource Assessment System', 'Prediction report'],
         ['Scope', scopeName()],
         ['Data source', sourceLabel()],
         ['Forecast horizon', `${state.horizon} days`],
@@ -470,6 +474,12 @@ const enhance = async () => {
       };
     };
     draw();
+    void liveDataPromise.then(([prediction, assets]) => {
+      if (window.location.pathname !== '/predictions') return;
+      livePrediction = prediction;
+      liveAssets = assets;
+      draw();
+    });
   } finally {
     delete host.dataset.predictionLoading;
   }

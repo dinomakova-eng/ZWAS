@@ -284,6 +284,7 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
     let inspectionSequence = 0;
     let analysisPoint: L.LatLng | null = null;
     let inspectPoint: (point: L.LatLng) => void = () => undefined;
+    let gridLoadPromise: Promise<void> | null = null;
 
     const positionAnalysisPopup = () => {
       const popup = analysisPopupRef.current;
@@ -377,29 +378,26 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
 
     const initialise = async () => {
       try {
-        const [regions, grid, turbines, liveResponse] = await Promise.all([
+        const [regions, turbines, liveResponse] = await Promise.all([
           json('/gis/zetdc-regions.geojson'),
-          json('/gis/zesa-grid-infrastructure.geojson'),
           json('/api/turbines', { headers: { Authorization: `Bearer ${token}` } }),
           json('/api/live-wind', { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
-        ]) as [any, any, Turbine[], LiveWindResponse | null];
+        ]) as [any, Turbine[], LiveWindResponse | null];
         if (disposed || !mapElementRef.current) return;
 
         const liveStations = liveResponse?.stations || [];
-
-        const gridFeatures: any[] = grid.features || [];
-        const stations = gridFeatures.filter(feature => feature.properties?.asset_type === 'station');
-        const substations = stations.filter(feature => String(feature.properties?.station_type || '').toUpperCase() === 'SUBSTATION');
-        const transformers = gridFeatures.filter(feature => feature.properties?.asset_type === 'transformer');
-        const overheadRoutes = gridFeatures.filter(feature => feature.properties?.asset_type === 'overhead');
-        const cableRoutes = gridFeatures.filter(feature => feature.properties?.asset_type === 'cable');
+        let stations: any[] = [];
+        let substations: any[] = [];
+        let transformers: any[] = [];
+        let overheadRoutes: any[] = [];
+        let cableRoutes: any[] = [];
 
         setSummary({
           mastPoints: turbines.length,
           livePoints: liveStations.length,
-          stations: stations.length,
-          transformers: transformers.length,
-          routes: [...overheadRoutes, ...cableRoutes].reduce((total, feature) => total + Number(feature.properties?.segment_count || 1), 0),
+          stations: 0,
+          transformers: 0,
+          routes: 0,
         });
 
         const regionLayer = L.geoJSON(regions, {
@@ -535,6 +533,8 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
 
         inspectPoint = async point => {
           const inspectionId = ++inspectionSequence;
+          await gridLoadPromise?.catch(() => undefined);
+          if (disposed || inspectionId !== inspectionSequence) return;
           const nearestTurbine = nearest(turbines, item => item.lat, item => item.lon, point);
           const nearestSubstation = nearest(substations.length ? substations : stations, item => Number((item as any).properties.measure_lat), item => Number((item as any).properties.measure_lon), point);
           const nearestTransformer = nearest(transformers, item => Number((item as any).properties.measure_lat), item => Number((item as any).properties.measure_lon), point);
@@ -631,7 +631,38 @@ export function EnvironmentModule({ token }: EnvironmentModuleProps) {
 
         map.on('click', event => inspectPoint(event.latlng));
 
-        setStatus(liveStations.length ? 'Annual, live, mast and grid layers loaded' : 'Annual, mast and grid layers loaded · live wind unavailable');
+        setStatus(liveStations.length ? 'Annual, live and mast layers loaded · adding grid progressively' : 'Annual and mast layers loaded · adding grid progressively');
+        gridLoadPromise = json('/gis/zesa-grid-infrastructure.geojson').then(grid => {
+          if (disposed) return;
+          const gridFeatures: any[] = grid.features || [];
+          stations = gridFeatures.filter(feature => feature.properties?.asset_type === 'station');
+          substations = stations.filter(feature => String(feature.properties?.station_type || '').toUpperCase() === 'SUBSTATION');
+          transformers = gridFeatures.filter(feature => feature.properties?.asset_type === 'transformer');
+          overheadRoutes = gridFeatures.filter(feature => feature.properties?.asset_type === 'overhead');
+          cableRoutes = gridFeatures.filter(feature => feature.properties?.asset_type === 'cable');
+          setSummary({
+            mastPoints: turbines.length,
+            livePoints: liveStations.length,
+            stations: stations.length,
+            transformers: transformers.length,
+            routes: [...overheadRoutes, ...cableRoutes].reduce((total, feature) => total + Number(feature.properties?.segment_count || 1), 0),
+          });
+          const renderTasks: Array<() => void> = [
+            ...overheadRoutes.map(feature => () => overheadLayer.addData(feature)),
+            ...cableRoutes.map(feature => () => cableLayer.addData(feature)),
+            ...pointFeatures(stations).features.map((feature: any) => () => stationLayer.addData(feature)),
+            ...pointFeatures(transformers).features.map((feature: any) => () => transformerLayer.addData(feature)),
+          ];
+          const renderBatch = () => {
+            if (disposed) return;
+            for (let index = 0; index < 12 && renderTasks.length; index += 1) renderTasks.shift()!();
+            if (renderTasks.length) window.requestAnimationFrame(renderBatch);
+            else setStatus(liveStations.length ? 'Annual, live, mast and grid layers loaded' : 'Annual, mast and grid layers loaded · live wind unavailable');
+          };
+          window.requestAnimationFrame(renderBatch);
+        }).catch(() => {
+          if (!disposed) setStatus(liveStations.length ? 'Annual, live and mast layers loaded · grid unavailable' : 'Annual and mast layers loaded · grid and live wind unavailable');
+        });
         requestAnimationFrame(() => map?.invalidateSize());
       } catch (error) {
         if (disposed || controller.signal.aborted) return;

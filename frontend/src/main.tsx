@@ -39,17 +39,12 @@ import './visualization-colors.css';
 import './default-reports.css';
 import './default-report-detail.css';
 import './custom-report-selector.css';
-import './prediction-workspace';
-import './admin-console';
-import './business-intelligence';
-import './reports-workspace';
-import './comparison-workspace';
 import './compact-page-headers.css';
 import './environment-module.css';
 import {getApiData, clearApiCache, refreshLiveData} from './data-client';
 import {navigateApp} from './navigation';
 import {EnvironmentModule} from './environment-module';
-const initOsmFleetMap = async () => {
+const initOsmFleetMap = async (initialTurbines?: any[]) => {
     const target = document.querySelector<HTMLElement>('.zimbabwe:not([data-osm-map])');
     if (!target)
         return;
@@ -58,10 +53,9 @@ const initOsmFleetMap = async () => {
     if (!auth)
         return;
     const { t } = JSON.parse(auth);
-    const [regions, turbines, live] = await Promise.all([
+    const [regions, turbines] = await Promise.all([
         fetch('/gis/zetdc-regions.geojson').then(response => response.json()),
-        getApiData<any[]>('/turbines', t),
-        getApiData<any>('/live-wind', t).catch(() => null),
+        initialTurbines ? Promise.resolve(initialTurbines) : getApiData<any[]>('/turbines', t),
     ]);
     target.innerHTML = '';
     const map = L.map(target, {
@@ -272,23 +266,27 @@ const initOsmFleetMap = async () => {
             if (hoverPopup.isActive()) marker.openPopup();
         });
     });
-    (live?.stations || []).forEach((asset: any) => {
-        const wind = Number(asset.latest_wind_speed || 0).toFixed(2);
-        const stddev = Number(asset.wind_speed_stddev || 0).toFixed(2);
-        const density = Number(asset.latest_air_density || 0).toFixed(4);
-        const direction = Number(asset.latest_wind_direction || 0).toFixed(0);
-        const marker = L.circleMarker([asset.lat, asset.lon], {
-            radius: 8,
-            color: '#d49e16',
-            weight: 2,
-            fillColor: '#fff3cd',
-            fillOpacity: .9,
-        }).addTo(map).bindPopup(
-            `<strong>${asset.name}</strong><br/>Live Wind Maps Data<br/>Open-Meteo wind: <b>${wind} m/s</b><br/>Daily wind variability: <b>${stddev} m/s σ</b><br/>Wind direction: <b>${direction}°</b><br/>Air density: <b>${density} kg/m3</b><br/>Updated: <b>${String(asset.last_reading_at).slice(0, 16)}</b>`,
-            { autoPan: true, offset: [0, -8] },
-        );
-        bindHoverPopup(marker);
-    });
+    // Live points enhance the map, but they must not hold up the fleet view.
+    void getApiData<any>('/live-wind', t).then(live => {
+        if (!document.contains(target)) return;
+        (live?.stations || []).forEach((asset: any) => {
+            const wind = Number(asset.latest_wind_speed || 0).toFixed(2);
+            const stddev = Number(asset.wind_speed_stddev || 0).toFixed(2);
+            const density = Number(asset.latest_air_density || 0).toFixed(4);
+            const direction = Number(asset.latest_wind_direction || 0).toFixed(0);
+            const marker = L.circleMarker([asset.lat, asset.lon], {
+                radius: 8,
+                color: '#d49e16',
+                weight: 2,
+                fillColor: '#fff3cd',
+                fillOpacity: .9,
+            }).addTo(map).bindPopup(
+                `<strong>${asset.name}</strong><br/>Live Wind Maps Data<br/>Open-Meteo wind: <b>${wind} m/s</b><br/>Daily wind variability: <b>${stddev} m/s σ</b><br/>Wind direction: <b>${direction}°</b><br/>Air density: <b>${density} kg/m3</b><br/>Updated: <b>${String(asset.last_reading_at).slice(0, 16)}</b>`,
+                { autoPan: true, offset: [0, -8] },
+            );
+            bindHoverPopup(marker);
+        });
+    }).catch(() => undefined);
 };
 window.addEventListener('zetdc:route-ready', () => { initOsmFleetMap().catch(() => undefined); });
 const initLoginOsmMap = async () => {
@@ -352,7 +350,15 @@ function Login({ onLogin }: {
     return;
 } const d = await r.json(); onLogin(d.user, d.token); } catch {
     setError('The sign-in service is unavailable. Check that the system is running and try again.');
-} }; const turbine = (className: string) => <div className={'login-turbine ' + className}><span /><i /><b /></div>; return <main className="login"><section className="login-brand"><div className="login-grid"/><div className="login-topline"><img src="/zesa-logo.png" alt="ZESA"/><span>ZIMBABWE ELECTRICITY SUPPLY AUTHORITY</span></div><div className="login-scene"><div className="zim-outline"><img className="zimbabwe-outline-image" src="/zimbabwe-outline.png" alt="Outline of Zimbabwe"/><span>Zimbabwe</span>{turbine('turbine-one')}{turbine('turbine-two')}{turbine('turbine-three')}</div><div className="signal signal-one"/><div className="signal signal-two"/></div><div className="login-copy"><p className="eyebrow">RENEWABLE ENERGY OPERATIONS</p><h1>Zesa Wind<br />Assessment System</h1><p>Measured visibility across Zimbabwe's wind assessment network.</p><div className="login-stat"><Bolt /><span>8 measured wind points</span><span className="dot"/><span>Measurement data loaded</span></div></div></section><form className="login-form" onSubmit={submit}><img className="form-logo" src="/zesa-logo.png" alt="ZESA crest"/><p className="eyebrow">SECURE OPERATIONS ACCESS</p><h2>Sign in to control</h2><label>EC Number<input value={ec} onChange={e => setEc(e.target.value)} autoComplete="username"/></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password"/></label>{error && <p className="error">{error}</p>}<button>Sign in <span>→</span></button><p className="login-help">Authorised ZESA staff only<br />Use your assigned EC credentials</p></form></main>; }
+} }; const turbine = (className: string) => <div className={'login-turbine ' + className}><span /><i /><b /></div>; return <main className="login"><section className="login-brand"><div className="login-grid"/><div className="login-scene"><div className="zim-outline"><img className="zimbabwe-outline-image" src="/zimbabwe-outline.png" alt="Outline of Zimbabwe"/><span>Zimbabwe</span>{turbine('turbine-one')}{turbine('turbine-two')}{turbine('turbine-three')}</div><div className="signal signal-one"/><div className="signal signal-two"/></div><div className="login-copy"><p className="eyebrow">RENEWABLE ENERGY OPERATIONS</p><h1>Wind Resource<br />Assessment System</h1><p>Measured visibility across Zimbabwe's wind assessment network.</p><div className="login-stat"><Bolt /><span>8 measured wind points</span><span className="dot"/><span>Measurement data loaded</span></div></div></section><form className="login-form" onSubmit={submit}><p className="eyebrow">SECURE OPERATIONS ACCESS</p><h2>Sign in to control</h2><label>EC Number<input value={ec} onChange={e => setEc(e.target.value)} autoComplete="username"/></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password"/></label>{error && <p className="error">{error}</p>}<button>Sign in <span>→</span></button><p className="login-help">Authorised staff only<br />Use your assigned EC credentials</p></form></main>; }
+
+function AnimatedTurbineMark() {
+    return <div className="turbine-brand-mark" aria-hidden="true">
+        <i className="brand-wind wind-one"/><i className="brand-wind wind-two"/><i className="brand-wind wind-three"/>
+        <i className="brand-turbine-tower"/>
+        <div className="brand-turbine-rotor"><i/><i/><i/></div>
+    </div>;
+}
 function Layout({ user, token, onLogout }: {
     user: User;
     token: string;
@@ -364,9 +370,9 @@ function Layout({ user, token, onLogout }: {
     const compactPageHeader = location.pathname.startsWith('/reports') || location.pathname === '/predictions' || location.pathname === '/environment';
     useEffect(() => {
         const started = () => setLiveRefreshState('refreshing');
-        const refreshed = () => {
+        const refreshed = (event: Event) => {
             setLiveRefreshState('current');
-            setLiveRevision(current => current + 1);
+            if ((event as CustomEvent).detail?.status === 'refreshed') setLiveRevision(current => current + 1);
         };
         const failed = () => setLiveRefreshState('error');
         window.addEventListener('zetdc:live-data-refresh-started', started);
@@ -383,9 +389,9 @@ function Layout({ user, token, onLogout }: {
     const liveStatus = liveRefreshState === 'refreshing'
         ? 'REFRESHING LIVE DATA'
         : liveRefreshState === 'error' ? 'CACHED LIVE DATA' : 'LIVE DATA CURRENT';
-    return <div className="shell"><aside><div className="logo"><span><Wind /></span><b>ZESA</b><small>WIND ASSESSMENT SYSTEM</small></div><nav>
+    return <div className="shell"><aside><div className="logo"><AnimatedTurbineMark/><b>Wind Resource</b><small>ASSESSMENT SYSTEM</small></div><nav>
     <NavLink to="/"><LayoutDashboard /> Overview</NavLink><NavLink to="/environment"><MapPin /> Wind Map</NavLink><NavLink to="/reports"><BarChart3 /> Reports</NavLink><NavLink to="/predictions"><Sparkles /> Predictions</NavLink><NavLink to="/history"><HistoryIcon /> History</NavLink>{user.role === 'admin' && <NavLink to="/admin"><Settings /> Administration</NavLink>}
-  </nav><div className="sidebar-foot"><div className="user-avatar">{user.name.split(' ').map(x => x[0]).join('')}</div><div><strong>{user.name}</strong><small>{user.role} · {user.ec_number}</small></div><button aria-label="Sign out" title="Sign out" onClick={onLogout}><LogOut size={18}/></button></div></aside><section className={`workspace${compactPageHeader ? ' compact-page-header' : ''}`}><header><div><p className="eyebrow">NATIONAL RENEWABLES OPERATIONS</p><h2>Wind Measurement Control</h2></div><div className={`live ${liveRefreshState}`}><i /> {liveStatus} <span>8 WIND POINTS</span></div></header><Routes>
+  </nav><div className="sidebar-foot"><div className="user-avatar">{user.name.split(' ').map(x => x[0]).join('')}</div><div><strong>{user.name}</strong><small>{user.role} · {user.ec_number}</small></div><button aria-label="Sign out" title="Sign out" onClick={onLogout}><LogOut size={18}/></button></div></aside><section className={`workspace${compactPageHeader ? ' compact-page-header' : ''}`}><header><div><p className="eyebrow">NATIONAL RENEWABLES OPERATIONS</p><h2>Wind Resource Assessment System</h2></div><div className={`live ${liveRefreshState}`}><i /> {liveStatus} <span>8 WIND POINTS</span></div></header><Routes>
     <Route path="/" element={<Dashboard key={liveRevision} token={token}/>}/><Route path="/environment" element={<EnvironmentModule key={liveRevision} token={token}/>}/><Route path="/summary/:focus" element={<SummaryDetail token={token} liveRevision={liveRevision}/>}/><Route path="/turbines/:id" element={<TurbineDetail token={token}/>}/><Route path="/reports" element={<ReportsWorkspace />}/><Route path="/reports/analytics" element={<Analytics />}/><Route path="/reports/compare" element={<Compare />}/><Route path="/predictions" element={<PredictionsWorkspace />}/><Route path="/history" element={<HistoryWorkspace token={token} liveRevision={liveRevision}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin key={liveRevision} token={token}/> : <Navigate to="/"/>}/>
   </Routes></section></div>;
 }
@@ -409,7 +415,7 @@ function Dashboard({ token }: {
 
     useEffect(() => {
         if (!data) return;
-        const frame = window.requestAnimationFrame(() => { initOsmFleetMap().catch(() => undefined); });
+        const frame = window.requestAnimationFrame(() => { initOsmFleetMap(data.t).catch(() => undefined); });
         return () => window.cancelAnimationFrame(frame);
     }, [data]);
 
@@ -727,15 +733,20 @@ function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision
     const [exportStatus, setExportStatus] = useState('');
 
     useEffect(() => {
-        Promise.all([
-            fetchApi('/history', token),
-            fetchApi('/history?source=live', token).catch(() => null),
-        ]).then(([data, live]) => {
-            setHistories({ zetdc: data, live });
+        let active = true;
+        const mastHistory = fetchApi('/history', token);
+        const liveHistory = fetchApi('/history?source=live', token).catch(() => null);
+        mastHistory.then(data => {
+            if (!active) return;
+            setHistories({ zetdc: data, live: null });
             const initialYear = data.years.includes(2026) ? 2026 : data.years[data.years.length - 1];
             setYear(initialYear);
             setMonth(null);
         });
+        liveHistory.then(live => {
+            if (active) setHistories((current: any) => current ? { ...current, live } : current);
+        });
+        return () => { active = false; };
     }, [token, liveRevision]);
 
     useEffect(() => {
@@ -932,13 +943,29 @@ function HistoryWorkspace({ token, liveRevision }: { token: string; liveRevision
     </main>;
 }
 
-function ReportsWorkspace() { return <main className="content reports-host loading" aria-label="Reports" aria-busy="true"/>; }
-function PredictionsWorkspace() { return <main className="content prediction-host loading" aria-label="Predictions">Loading forecast data...</main>; }
-function Analytics() { return <main className="content analytics-host loading" aria-label="Analytics">Loading compact analytics...</main>; }
-function Compare() { return <main className="content comparison-host loading" aria-label="Compare">Loading site comparison...</main>; }
+const workspaceModules = {
+    reports: () => import('./reports-workspace'),
+    predictions: () => import('./prediction-workspace'),
+    analytics: () => import('./business-intelligence'),
+    comparison: () => import('./comparison-workspace'),
+    admin: () => import('./admin-console'),
+};
+
+function useWorkspaceModule(load: () => Promise<unknown>) {
+    useEffect(() => {
+        let active = true;
+        load().then(() => { if (active) window.dispatchEvent(new Event('zetdc:route-ready')); });
+        return () => { active = false; };
+    }, [load]);
+}
+
+function ReportsWorkspace() { useWorkspaceModule(workspaceModules.reports); return <main className="content reports-host loading" aria-label="Reports" aria-busy="true"/>; }
+function PredictionsWorkspace() { useWorkspaceModule(workspaceModules.predictions); return <main className="content prediction-host loading" aria-label="Predictions">Loading forecast data...</main>; }
+function Analytics() { useWorkspaceModule(workspaceModules.analytics); return <main className="content analytics-host loading" aria-label="Analytics">Loading compact analytics...</main>; }
+function Compare() { useWorkspaceModule(workspaceModules.comparison); return <main className="content comparison-host loading" aria-label="Compare">Loading site comparison...</main>; }
 function Admin({ token }: {
     token: string;
-}) { return <main className="content admin-host" aria-label="Administration"/>; }
+}) { useWorkspaceModule(workspaceModules.admin); return <main className="content admin-host" aria-label="Administration"/>; }
 function PageTitle({ title, note }: {
     title: string;
     note: string;

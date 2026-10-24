@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 import jwt
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,7 @@ from .metrics import calculate_metrics
 from .open_meteo import collect_open_meteo, cached_open_meteo, current_month_period, live_forecast_days, live_readings, live_stations, summarize_province_period
 from .osm import reverse_osm_location
 
-app = FastAPI(title="Zesa Wind Assessment System API")
+app = FastAPI(title="Wind Resource Assessment System API")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
 security = HTTPBearer()
 SECRET = os.getenv("JWT_SECRET", "development-secret-change-me")
@@ -59,6 +60,11 @@ def _live_by_turbine():
     return grouped
 
 
+def _live_cache_version() -> str:
+    payload = cached_open_meteo(turbines())
+    return str(payload.get("collected_at") or payload.get("observed_through") or "cached")
+
+
 def _recent_rows_by_turbine(readings_by_turbine, days: int):
     window = timedelta(days=max(1, min(days, 730)))
     result = []
@@ -85,8 +91,30 @@ def _daily_for_source(source: str, days: int):
 
 def _history_for_source(source: str):
     if source == "live":
-        return monthly_history_for(_live_rows(), live_stations(turbines()))
+        return _live_history(_live_cache_version())
     return monthly_history()
+
+
+@lru_cache(maxsize=4)
+def _live_history(_cache_version: str):
+    return monthly_history_for(_live_rows(), live_stations(turbines()))
+
+
+@lru_cache(maxsize=16)
+def _prediction_for_source(forecast_days: int, source: str, _cache_version: str):
+    mast_assets = turbines()
+    live_rows_by_turbine = _live_by_turbine()
+    provider_by_turbine = live_forecast_days(mast_assets)
+    rows_by_turbine = live_rows_by_turbine if source == "live" else READINGS_BY_TURBINE
+    assets = live_stations(mast_assets) if source == "live" else mast_assets
+    return build_live_informed_forecast(
+        assets,
+        rows_by_turbine,
+        forecast_days,
+        provider_by_turbine,
+        live_rows_by_turbine,
+        "live" if source == "live" else "mast",
+    )
 
 
 async def _refresh_live_cache(force: bool) -> tuple[dict, bool]:
@@ -143,7 +171,7 @@ def admin(current=Depends(user)):
 async def start_open_meteo_collector():
     asyncio.create_task(_daily_open_meteo_refresh())
 @app.get("/health")
-def health(): return {"status": "healthy", "service": "Zesa Wind Assessment System"}
+def health(): return {"status": "healthy", "service": "Wind Resource Assessment System"}
 @app.post("/auth/login")
 def login(payload: Login):
     identity = authenticate_ec_number(payload.ec_number, payload.password)
@@ -252,19 +280,7 @@ def history(source: str = "zetdc", current=Depends(user)):
 @app.get("/predictions")
 def predictions(days: int = 30, source: str = "zetdc", current=Depends(user)):
     forecast_days = min(max(days, 1), 180)
-    mast_assets = turbines()
-    live_rows_by_turbine = _live_by_turbine()
-    provider_by_turbine = live_forecast_days(mast_assets)
-    rows_by_turbine = live_rows_by_turbine if source == "live" else READINGS_BY_TURBINE
-    assets = live_stations(mast_assets) if source == "live" else mast_assets
-    forecast = build_live_informed_forecast(
-        assets,
-        rows_by_turbine,
-        forecast_days,
-        provider_by_turbine,
-        live_rows_by_turbine,
-        "live" if source == "live" else "mast",
-    )
+    forecast = _prediction_for_source(forecast_days, source, _live_cache_version())
     return {**forecast, "data_source": _source_meta(source)}
 
 @app.get("/environment/wind-resource")

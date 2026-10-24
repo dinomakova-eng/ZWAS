@@ -375,7 +375,18 @@ def monthly_history():
     return monthly_history_for(ALL_READINGS, TURBINES)
 
 
+@lru_cache(maxsize=1)
 def latest_reported_month():
-    """Return the most recent month containing mast observations."""
-    months = monthly_history()["months"]
+    """Return the most recent month containing mast observations.
+
+    Build only the latest month here. The complete History archive is much
+    larger and should be assembled only when the History page requests it.
+    """
+    if not ALL_READINGS:
+        return None
+    latest_key = max(reading["timestamp"][:7] for reading in ALL_READINGS)
+    months = monthly_history_for(
+        (reading for reading in ALL_READINGS if reading["timestamp"].startswith(latest_key)),
+        TURBINES,
+    )["months"]
     return months[-1] if months else None

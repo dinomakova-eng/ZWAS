@@ -14,7 +14,7 @@ FRONTEND_PID=""
 
 cleanup() {
   trap - EXIT INT TERM
-  printf '\nStopping ZETDC Wind Assessment System...\n'
+  printf '\nStopping Wind Resource Assessment System...\n'
 
   if [[ -n "$FRONTEND_PID" ]] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
     kill "$FRONTEND_PID" 2>/dev/null || true
@@ -94,7 +94,7 @@ FRONTEND_PID=$!
 wait_for_url "Backend API" "http://127.0.0.1:$BACKEND_PORT/health" "$BACKEND_PID"
 wait_for_url "Web system" "http://127.0.0.1:$FRONTEND_PORT/" "$FRONTEND_PID"
 
-printf '\nZETDC Wind Assessment System is running.\n'
+printf '\nWind Resource Assessment System is running.\n'
 printf 'Web system: http://localhost:%s\n' "$FRONTEND_PORT"
 printf 'Backend API: http://localhost:%s\n' "$BACKEND_PORT"
 printf 'Press Ctrl+C to stop both services.\n\n'

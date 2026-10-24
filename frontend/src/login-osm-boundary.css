@@ -113,12 +113,3 @@
 @media (prefers-reduced-motion: reduce) {
   .login-map-rotor, .login-energy-spark, .login-transmission-cable, .login-map-pylon { animation: none; }
 }
-
-/* Keep the emblem immediately before the sign-in statement rather than floating beside it. */
-.login-form .form-logo {
-  position: static;
-  display: block;
-  width: 70px;
-  height: 70px;
-  margin: 0 0 10px;
-}

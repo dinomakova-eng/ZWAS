@@ -29,4 +29,5 @@ def test_recent_window_keeps_every_point_visible():
     assert {row["turbine_id"] for row in rows} == {asset["id"] for asset in turbines()}
     assert all(row["measurement_source"] == "mast" for row in rows)
     assert all(0 <= row["wind_speed"] < 25 for row in rows)
+    assert all(row["wind_speed_min"] <= row["wind_speed"] <= row["wind_speed_max"] for row in rows)
     assert all("energy_produced_mwh" not in row and "power_output" not in row for row in rows)
